@@ -447,11 +447,12 @@ export class EnsemblService {
 
   async getHomologyById(
     id: string,
+    species: string,
     type: string,
     targetSpecies: string | undefined,
     ctx: Context,
   ): Promise<HomologyEntry[]> {
-    let path = `/homology/id/${encodeURIComponent(id)}?type=${encodeURIComponent(type)}`;
+    let path = `/homology/id/${encodeURIComponent(species)}/${encodeURIComponent(id)}?type=${encodeURIComponent(type)}`;
     if (targetSpecies) path += `&target_species=${encodeURIComponent(targetSpecies)}`;
     const raw = await this.fetchWithRetry<RawHomologyResponse>(path, ctx);
     return normalizeHomology(raw, id);
@@ -461,7 +462,7 @@ export class EnsemblService {
 
   async getXrefsById(id: string, dbname: string | undefined, ctx: Context): Promise<XrefEntry[]> {
     let path = `/xrefs/id/${encodeURIComponent(id)}`;
-    if (dbname) path += `?dbname=${encodeURIComponent(dbname)}`;
+    if (dbname) path += `?external_db=${encodeURIComponent(dbname)}`;
     const raw = await this.fetchWithRetry<RawXrefEntry[]>(path, ctx);
     if (!Array.isArray(raw)) return [];
     return raw.map(normalizeXref);

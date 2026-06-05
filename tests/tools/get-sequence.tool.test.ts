@@ -88,6 +88,20 @@ describe('ensemblGetSequence', () => {
     });
   });
 
+  it('throws type_mismatch for the Ensembl multiple sequences error message', async () => {
+    // Ensembl returns this specific message when requesting non-genomic type for a gene ID
+    mockGetSequenceById.mockRejectedValueOnce(
+      new Error(
+        'Requesting a gene and type not equal to "genomic" can result in multiple sequences. 15 sequences detected.',
+      ),
+    );
+    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
+    const input = ensemblGetSequence.input.parse({ id: 'ENSG00000139618', type: 'protein' });
+    await expect(ensemblGetSequence.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'type_mismatch' },
+    });
+  });
+
   it('throws not_found when stable ID does not exist', async () => {
     mockGetSequenceById.mockRejectedValueOnce(new Error('ID ENSG99999999999 not found in Ensembl'));
     const ctx = createMockContext({ errors: ensemblGetSequence.errors });

@@ -129,7 +129,10 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
       .queryRegion(input.species, input.region, input.feature, input.biotype, ctx)
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        if (/invalid.*region|coordinate|parse/i.test(msg)) {
+        if (
+          /invalid.*region|coordinate|parse/i.test(msg) ||
+          /is not a valid start|is not a valid end|is not a valid chr/i.test(msg)
+        ) {
           throw ctx.fail('invalid_region', `Invalid region "${input.region}": ${msg}`);
         }
         if (/species|invalid|unrecognized/i.test(msg)) {

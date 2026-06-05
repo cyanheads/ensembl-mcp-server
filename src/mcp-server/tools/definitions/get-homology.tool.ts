@@ -151,10 +151,10 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     if (input.id?.trim()) {
       queryId = input.id.trim();
       homologs = await service
-        .getHomologyById(queryId, input.type, input.target_species, ctx)
+        .getHomologyById(queryId, input.species, input.type, input.target_species, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
-          if (/not found/i.test(msg)) {
+          if (/not found|no valid lookup|page not found/i.test(msg)) {
             throw ctx.fail('not_found', `Gene ID "${queryId}" not found in Ensembl.`);
           }
           throw err;
@@ -165,7 +165,8 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
         .getHomologyBySymbol(queryId, input.species, input.type, input.target_species, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
-          if (/not found/i.test(msg)) {
+          // Ensembl returns {"error":"<species_name>"} for invalid gene symbols in homology endpoint
+          if (/not found|no valid lookup/i.test(msg) || msg === input.species) {
             throw ctx.fail('not_found', `Gene symbol "${queryId}" not found in ${input.species}.`);
           }
           throw err;

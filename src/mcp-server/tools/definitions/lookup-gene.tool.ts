@@ -215,7 +215,7 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
         .lookupGene(input.symbol.trim(), speciesStr, input.expand_transcripts, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
-          if (/not found|no stable id|no results/i.test(msg)) {
+          if (/not found|no stable id|no results|no valid lookup/i.test(msg)) {
             throw ctx.fail(
               'not_found',
               `Gene symbol "${input.symbol}" not found in ${speciesStr}.`,

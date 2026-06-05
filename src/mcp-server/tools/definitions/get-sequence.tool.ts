@@ -142,8 +142,16 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
       .getSequenceById(input.id.trim(), input.type, ctx)
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        if (/protein.*gene|cds.*gene|type.*mismatch|incompatible/i.test(msg)) {
-          throw ctx.fail('type_mismatch', msg);
+        if (
+          /protein.*gene|cds.*gene|type.*mismatch|incompatible/i.test(msg) ||
+          /requesting a gene and type not equal/i.test(msg) ||
+          /multiple sequences detected/i.test(msg)
+        ) {
+          throw ctx.fail(
+            'type_mismatch',
+            `Cannot request type "${input.type}" from a gene ID — use a transcript or protein stable ID instead. ` +
+              `Call ensembl_lookup_gene with expand_transcripts=true to get transcript IDs.`,
+          );
         }
         if (/not found|no stable id/i.test(msg)) {
           throw ctx.fail('not_found', `ID ${input.id} not found in Ensembl.`);

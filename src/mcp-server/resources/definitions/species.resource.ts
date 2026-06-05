@@ -1,10 +1,9 @@
 /**
- * @fileoverview Resource exposing the Ensembl species catalog with pagination.
+ * @fileoverview Resource exposing the Ensembl species catalog.
  * @module mcp-server/resources/definitions/species
  */
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { extractCursor, paginateArray, requestContextService } from '@cyanheads/mcp-ts-core/utils';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 
 const DIVISION_VALUES = [
@@ -18,13 +17,12 @@ const DIVISION_VALUES = [
 export const ensemblSpeciesResource = resource('ensembl://species', {
   name: 'Ensembl Species',
   description:
-    'Paginated list of all Ensembl-supported species with internal name, display name, assembly, ' +
+    'Complete catalog of Ensembl-supported species with internal name, display name, assembly, ' +
     'taxon ID, and division. Addressable reference for tool bootstrapping. ' +
-    'Contains ~250 vertebrate species plus additional non-vertebrate divisions. ' +
+    'Contains ~350 vertebrate species plus additional non-vertebrate divisions. ' +
     'Use this as stable, injectable context when working with unfamiliar species names.',
   mimeType: 'application/json',
   params: z.object({
-    cursor: z.string().optional().describe('Opaque pagination cursor from a previous response.'),
     division: z
       .enum(DIVISION_VALUES)
       .optional()
@@ -34,25 +32,14 @@ export const ensemblSpeciesResource = resource('ensembl://species', {
   }),
 
   async handler(params, ctx) {
-    ctx.log.debug('Fetching species resource', {
-      cursor: params.cursor,
-      division: params.division,
-    });
+    ctx.log.debug('Fetching species resource', { division: params.division });
     const service = getEnsemblService();
 
     const allSpecies = await service.listSpecies(params.division, ctx);
     allSpecies.sort((a, b) => a.name.localeCompare(b.name));
 
-    const cursor = extractCursor({ ...(params.cursor && { cursor: params.cursor }) });
-    const reqCtx = requestContextService.createRequestContext({
-      operation: 'ensembl-species-resource',
-      parentContext: { requestId: ctx.requestId, traceId: ctx.traceId },
-    });
-    const page = paginateArray(allSpecies, cursor, 50, 500, reqCtx);
-
     return {
-      species: page.items,
-      nextCursor: page.nextCursor,
+      species: allSpecies,
       totalCount: allSpecies.length,
     };
   },

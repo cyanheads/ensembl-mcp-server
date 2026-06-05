@@ -56,6 +56,14 @@ describe('ensemblGetHomology', () => {
     const result = await ensemblGetHomology.handler(input, ctx);
     expect(result.homologs).toHaveLength(1);
     expect(result.queryId).toBe('ENSG00000139618');
+    // Verify species is forwarded to the service (required for correct API URL)
+    expect(mockGetHomologyById).toHaveBeenCalledWith(
+      'ENSG00000139618',
+      'homo_sapiens',
+      expect.any(String),
+      undefined,
+      expect.anything(),
+    );
   });
 
   it('includes perc_id and perc_pos in ortholog results', async () => {
@@ -89,6 +97,16 @@ describe('ensemblGetHomology', () => {
     mockGetHomologyBySymbol.mockRejectedValueOnce(new Error('Gene not found in Ensembl'));
     const ctx = createMockContext({ errors: ensemblGetHomology.errors });
     const input = ensemblGetHomology.input.parse({ symbol: 'FAKEGENE' });
+    await expect(ensemblGetHomology.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'not_found' },
+    });
+  });
+
+  it('throws not_found when Ensembl returns species name as error (invalid symbol behavior)', async () => {
+    // Ensembl homology/symbol returns {"error":"homo_sapiens"} for invalid gene symbols
+    mockGetHomologyBySymbol.mockRejectedValueOnce(new Error('homo_sapiens'));
+    const ctx = createMockContext({ errors: ensemblGetHomology.errors });
+    const input = ensemblGetHomology.input.parse({ symbol: 'FAKEGENE', species: 'homo_sapiens' });
     await expect(ensemblGetHomology.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });

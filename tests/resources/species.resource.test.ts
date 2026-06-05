@@ -23,40 +23,24 @@ const mockSpecies: SpeciesInfo[] = Array.from({ length: 60 }, (_, i) => ({
 }));
 
 describe('ensemblSpeciesResource', () => {
-  it('returns paginated species list (50 per page)', async () => {
+  it('returns full species list with totalCount', async () => {
     mockListSpecies.mockResolvedValueOnce([...mockSpecies]);
     const ctx = createMockContext();
     const params = ensemblSpeciesResource.params.parse({});
     const result = (await ensemblSpeciesResource.handler(params, ctx)) as {
       species: SpeciesInfo[];
-      nextCursor: string | undefined;
       totalCount: number;
     };
-    expect(result.species).toHaveLength(50);
+    expect(result.species).toHaveLength(60);
     expect(result.totalCount).toBe(60);
-    expect(result.nextCursor).toBeDefined();
   });
 
-  it('returns second page when cursor is provided', async () => {
-    // Page 1
+  it('passes division filter to service when specified', async () => {
     mockListSpecies.mockResolvedValueOnce([...mockSpecies]);
-    const ctx1 = createMockContext();
-    const page1Result = (await ensemblSpeciesResource.handler(
-      ensemblSpeciesResource.params.parse({}),
-      ctx1,
-    )) as { species: SpeciesInfo[]; nextCursor: string | undefined; totalCount: number };
-    const cursor = page1Result.nextCursor;
-    expect(cursor).toBeDefined();
-
-    // Page 2
-    mockListSpecies.mockResolvedValueOnce([...mockSpecies]);
-    const ctx2 = createMockContext();
-    const page2Result = (await ensemblSpeciesResource.handler(
-      ensemblSpeciesResource.params.parse({ cursor }),
-      ctx2,
-    )) as { species: SpeciesInfo[]; nextCursor: string | undefined; totalCount: number };
-    expect(page2Result.species).toHaveLength(10);
-    expect(page2Result.nextCursor).toBeUndefined();
+    const ctx = createMockContext();
+    const params = ensemblSpeciesResource.params.parse({ division: 'EnsemblPlants' });
+    await ensemblSpeciesResource.handler(params, ctx);
+    expect(mockListSpecies).toHaveBeenCalledWith('EnsemblPlants', expect.anything());
   });
 
   it('sorts species alphabetically by name', async () => {
@@ -65,7 +49,7 @@ describe('ensemblSpeciesResource', () => {
     const result = (await ensemblSpeciesResource.handler(
       ensemblSpeciesResource.params.parse({}),
       ctx,
-    )) as { species: SpeciesInfo[]; nextCursor?: string; totalCount: number };
+    )) as { species: SpeciesInfo[]; totalCount: number };
     for (let i = 1; i < result.species.length; i++) {
       expect(
         result.species[i]!.name.localeCompare(result.species[i - 1]!.name),
