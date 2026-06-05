@@ -267,7 +267,6 @@ export class EnsemblService {
     if (!response.ok) {
       throw serviceUnavailable(`Ensembl API returned HTTP ${response.status}.`, {
         status: response.status,
-        url,
       });
     }
 
