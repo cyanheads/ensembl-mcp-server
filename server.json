@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "ensembl-mcp-server",
-  "description": "",
+  "name": "io.github.cyanheads/ensembl-mcp-server",
+  "description": "Look up genes, fetch sequences, predict variant consequences, find orthologs and xrefs via Ensembl.",
   "repository": {
-    "url": "",
+    "url": "https://github.com/cyanheads/ensembl-mcp-server",
     "source": "github"
   },
   "version": "0.1.0",
@@ -11,8 +11,8 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "ensembl-mcp-server",
-      "runtimeHint": "node",
+      "identifier": "@cyanheads/ensembl-mcp-server",
+      "runtimeHint": "bun",
       "version": "0.1.0",
       "packageArguments": [
         {
@@ -25,6 +25,13 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "ENSEMBL_BASE_URL",
+          "description": "Ensembl REST API base URL. Override to use GRCh37 endpoint or a local mirror.",
+          "format": "string",
+          "isRequired": false,
+          "default": "https://rest.ensembl.org"
+        },
         {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
@@ -40,8 +47,8 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "ensembl-mcp-server",
-      "runtimeHint": "node",
+      "identifier": "@cyanheads/ensembl-mcp-server",
+      "runtimeHint": "bun",
       "version": "0.1.0",
       "packageArguments": [
         {
@@ -54,6 +61,13 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "ENSEMBL_BASE_URL",
+          "description": "Ensembl REST API base URL. Override to use GRCh37 endpoint or a local mirror.",
+          "format": "string",
+          "isRequired": false,
+          "default": "https://rest.ensembl.org"
+        },
         {
           "name": "MCP_HTTP_HOST",
           "description": "The hostname for the HTTP server.",

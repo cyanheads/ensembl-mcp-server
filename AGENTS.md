@@ -11,18 +11,6 @@
 
 ---
 
-## First Session
-
-This project was just scaffolded with `bunx @cyanheads/mcp-ts-core init`. You're holding a production-grade MCP framework with the hard parts already solved — error handling, telemetry, auth, transport, validation, lifecycle. What's missing is the **domain**. Your job: design the tool, resource, and service surface with the user, then implement it as small pure handlers that throw — the framework catches, classifies, and instruments the rest. Design before code; the user's first messages set direction, so wait for them before scaffolding definitions.
-
-> **Remove this section** from CLAUDE.md / AGENTS.md after completing these steps. The skills and conventions below remain — this block is one-time onboarding only.
-
-1. **Get your bearings.** Take stock of the project tree, the skills in `skills/`, and the tools/MCP servers available. Light tool use is fine for context-building — you're mapping the territory, not committing yet.
-2. **Read the framework docs** — `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` (builders, Context, errors, exports, conventions)
-3. **Run the `setup` skill** — read `skills/setup/SKILL.md` and follow its checklist (project orientation, agent protocol file selection, echo definition cleanup, skill sync)
-4. **Design the server** — read `skills/design-mcp-server/SKILL.md` and work through it with the user to map the domain into tools, resources, and services before scaffolding
-
----
 
 ## What's Next?
 
@@ -60,35 +48,39 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
-  annotations: { readOnlyHint: true },
+export const ensemblLookupGene = tool('ensembl_lookup_gene', {
+  description: 'Resolve a gene by symbol + species or by Ensembl stable ID.',
+  annotations: { readOnlyHint: true, openWorldHint: true },
   input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().default(10).describe('Max results'),
+    symbol: z.string().optional().describe('Gene symbol (e.g. BRCA2, TP53). Requires species.'),
+    id: z.string().optional().describe('Ensembl stable ID (ENSG…).'),
+    species: z.string().default('homo_sapiens').describe('Species in Ensembl format.'),
   }),
   output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
+    gene: z.object({
+      id: z.string().describe('Ensembl gene stable ID.'),
+      displayName: z.string().optional().describe('Gene symbol.'),
+    }).describe('Resolved gene record'),
   }),
-  auth: ['inventory:read'],
+  errors: [
+    { reason: 'not_found', code: JsonRpcErrorCode.NotFound,
+      when: 'Symbol or ID not found in Ensembl',
+      recovery: 'Check spelling or call ensembl_list_species to confirm the species name.' },
+  ],
 
   async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
+    const service = getEnsemblService();
+    const gene = await service.lookupGene(input);
+    ctx.log.info('Gene resolved', { id: gene.id });
+    return { gene };
   },
 
-  // format() populates content[] — the markdown twin of structuredContent.
-  // Different clients read different surfaces (Claude Code → structuredContent,
-  // Claude Desktop → content[]); both must carry the same data.
-  // Enforced at lint time: every field in `output` must appear in the rendered text.
   format: (result) => [{
     type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
+    text: `**${result.gene.displayName ?? result.gene.id}** (${result.gene.id})`,
   }],
 });
 ```
@@ -97,60 +89,51 @@ export const searchItems = tool('search_items', {
 
 ```ts
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
-  async handler(params, ctx) {
-    const item = await ctx.state.get(`item:${params.itemId}`);
-    if (!item) throw notFound(`Item ${params.itemId} not found`, { itemId: params.itemId });
-    return item;
-  },
-});
-```
-
-### Prompt
-
-```ts
-import { prompt, z } from '@cyanheads/mcp-ts-core';
-
-export const reviewCode = prompt('review_code', {
-  description: 'Review code for issues and best practices.',
-  args: z.object({
-    code: z.string().describe('Code to review'),
-    language: z.string().optional().describe('Programming language'),
+export const ensemblGeneResource = resource('ensembl://gene/{id}', {
+  name: 'Ensembl Gene',
+  description: 'Gene record by Ensembl stable ID (ENSG…). Returns location, biotype, description, and transcript list.',
+  mimeType: 'application/json',
+  params: z.object({
+    id: z.string().describe('Ensembl gene stable ID (ENSG…). Version suffix optional.'),
   }),
-  generate: (args) => [
-    { role: 'user', content: { type: 'text', text: `Review this ${args.language ?? ''} code:\n${args.code}` } },
+  errors: [
+    { reason: 'not_found', code: JsonRpcErrorCode.NotFound,
+      when: 'The gene stable ID was not found in Ensembl.',
+      recovery: 'Verify the ID format (ENSG followed by 11 digits). Use ensembl_lookup_gene to resolve a symbol.' },
   ],
+  async handler(params, ctx) {
+    const service = getEnsemblService();
+    return service.lookupById(params.id);
+  },
 });
 ```
 
 ### Server config
 
 ```ts
-// src/config/server-config.ts — lazy-parsed, separate from framework config
+// src/config/server-config.ts
 import { z } from '@cyanheads/mcp-ts-core';
 import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
-  apiKey: z.string().describe('External API key'),
-  maxResults: z.coerce.number().default(100),
+  baseUrl: z.string().default('https://rest.ensembl.org').describe(
+    'Ensembl REST API base URL. Override to point at GRCh37 (https://grch37.rest.ensembl.org) or a local mirror.',
+  ),
 });
 
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
 export function getServerConfig() {
   _config ??= parseEnvConfig(ServerConfigSchema, {
-    apiKey: 'MY_API_KEY',
-    maxResults: 'MY_MAX_RESULTS',
+    baseUrl: 'ENSEMBL_BASE_URL',
   });
   return _config;
 }
 ```
 
-`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`MY_API_KEY`) not the path (`apiKey`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
+`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`ENSEMBL_BASE_URL`) not the path (`baseUrl`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
 
 ### Server instructions
 
@@ -225,18 +208,26 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 src/
   index.ts                              # createApp() entry point
   config/
-    server-config.ts                    # Server-specific env vars (Zod schema)
+    server-config.ts                    # ENSEMBL_BASE_URL env var (Zod schema)
   services/
-    [domain]/
-      [domain]-service.ts               # Domain service (init/accessor pattern)
-      types.ts                          # Domain types
+    ensembl/
+      ensembl-service.ts                # Ensembl REST client, rate-limit retry, error normalization
+      types.ts                          # Ensembl API response shapes
   mcp-server/
     tools/definitions/
-      [tool-name].tool.ts               # Tool definitions
+      list-species.tool.ts              # ensembl_list_species
+      lookup-gene.tool.ts               # ensembl_lookup_gene (symbol + ID + batch)
+      get-sequence.tool.ts              # ensembl_get_sequence (genomic/cdna/cds/protein)
+      query-region.tool.ts              # ensembl_query_region (overlap features)
+      predict-variant.tool.ts           # ensembl_predict_variant (VEP)
+      get-homology.tool.ts              # ensembl_get_homology (orthologs/paralogs)
+      get-xrefs.tool.ts                 # ensembl_get_xrefs (external DB cross-refs)
     resources/definitions/
-      [resource-name].resource.ts       # Resource definitions
+      gene.resource.ts                  # ensembl://gene/{id}
+      transcript.resource.ts            # ensembl://transcript/{id}
+      species.resource.ts               # ensembl://species
     prompts/definitions/
-      [prompt-name].prompt.ts           # Prompt definitions
+      gene-dossier.prompt.ts            # ensembl_gene_dossier workflow prompt
 ```
 
 ---
