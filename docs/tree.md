@@ -1,6 +1,6 @@
 # ensembl-mcp-server - Directory Structure
 
-Generated on: 2026-06-05 09:47:38
+Generated on: 2026-06-05 12:10:58
 
 ```text
 ensembl-mcp-server/
@@ -19,6 +19,7 @@ ensembl-mcp-server/
 │   ├── extensions.json
 │   └── settings.json
 ├── changelog/
+│   ├── 0.1.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -167,6 +168,7 @@ ensembl-mcp-server/
 ├── biome.json
 ├── bun.lock
 ├── bunfig.toml
+├── CHANGELOG.md
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile
