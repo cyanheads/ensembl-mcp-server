@@ -109,8 +109,10 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
     ctx.log.info('Fetching sequence', { id: input.id, type: input.type });
     const service = getEnsemblService();
 
-    // Detect region mode: contains ":" after optional species prefix
-    const regionPattern = /^[a-z_]+:\w+:\d+-\d+$/i;
+    // Detect region mode: contains ":" after optional species prefix.
+    // Scaffold/patch names carry dots (e.g. GL000220.1), so the chromosome
+    // segment allows "." in addition to word characters.
+    const regionPattern = /^[a-z_]+:[\w.]+:\d+-\d+$/i;
     const isRegion = regionPattern.test(input.id);
 
     if (isRegion) {

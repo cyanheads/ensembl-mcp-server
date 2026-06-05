@@ -79,6 +79,25 @@ describe('ensemblGetSequence', () => {
     expect(result).toBeDefined();
   });
 
+  it('detects region mode for dotted scaffold/patch names', async () => {
+    const regionSeq = { ...mockSequence, id: 'homo_sapiens:GL000220.1:1-1000' };
+    mockGetSequenceByRegion.mockResolvedValueOnce(regionSeq);
+    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
+    const input = ensemblGetSequence.input.parse({
+      id: 'homo_sapiens:GL000220.1:1-1000',
+      species: 'homo_sapiens',
+    });
+    const result = await ensemblGetSequence.handler(input, ctx);
+    expect(mockGetSequenceByRegion).toHaveBeenCalledWith(
+      'homo_sapiens',
+      'GL000220.1:1-1000',
+      0,
+      0,
+      ctx,
+    );
+    expect(result).toBeDefined();
+  });
+
   it('throws type_mismatch when requesting protein from a gene ID', async () => {
     mockGetSequenceById.mockRejectedValueOnce(new Error('protein type incompatible with gene ID'));
     const ctx = createMockContext({ errors: ensemblGetSequence.errors });
