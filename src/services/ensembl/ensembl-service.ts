@@ -276,7 +276,7 @@ export class EnsemblService {
 
   // --- withRetry wrapper ---
 
-  private async fetchWithRetry<T>(
+  private fetchWithRetry<T>(
     path: string,
     ctx: Context,
     options?: {

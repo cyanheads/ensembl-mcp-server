@@ -127,7 +127,7 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
     for (const x of result.xrefs) {
       const db = x.dbname ?? 'Unknown';
       if (!byDb.has(db)) byDb.set(db, []);
-      byDb.get(db)!.push(x);
+      byDb.get(db)?.push(x);
     }
 
     for (const [db, entries] of byDb) {

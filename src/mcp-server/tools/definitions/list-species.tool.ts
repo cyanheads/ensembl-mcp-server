@@ -96,17 +96,7 @@ export const ensemblListSpecies = tool('ensembl_list_species', {
     species.sort((a, b) => a.name.localeCompare(b.name));
     ctx.enrich.total(species.length);
 
-    return {
-      species: species.map((s) => ({
-        name: s.name,
-        ...(s.displayName && { displayName: s.displayName }),
-        ...(s.commonName && { commonName: s.commonName }),
-        ...(s.taxonId && { taxonId: s.taxonId }),
-        ...(s.assembly && { assembly: s.assembly }),
-        ...(s.division && { division: s.division }),
-      })),
-      totalCount: species.length,
-    };
+    return { species, totalCount: species.length };
   },
 
   format: (result) => {

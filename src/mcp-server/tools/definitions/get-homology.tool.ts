@@ -145,11 +145,13 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       throw ctx.fail('no_input', 'Provide either symbol (with species) or a stable gene ID.');
     }
 
+    const idTrimmed = input.id?.trim();
+    const symbolTrimmed = input.symbol?.trim();
     let queryId: string;
     let homologs: HomologyEntry[];
 
-    if (input.id?.trim()) {
-      queryId = input.id.trim();
+    if (idTrimmed) {
+      queryId = idTrimmed;
       homologs = await service
         .getHomologyById(queryId, input.species, input.type, input.target_species, ctx)
         .catch((err: unknown) => {
@@ -160,7 +162,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
           throw err;
         });
     } else {
-      queryId = input.symbol!.trim();
+      queryId = symbolTrimmed ?? '';
       homologs = await service
         .getHomologyBySymbol(queryId, input.species, input.type, input.target_species, ctx)
         .catch((err: unknown) => {
