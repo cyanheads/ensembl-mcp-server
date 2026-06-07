@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "ensembl-mcp-server",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "Look up genes, fetch sequences, predict variant consequences, find orthologs and xrefs via Ensembl.",
   "author": { "name": "cyanheads" },
   "repository": {
