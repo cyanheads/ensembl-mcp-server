@@ -131,7 +131,8 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
         const msg = err instanceof Error ? err.message : String(err);
         if (
           /invalid.*region|coordinate|parse/i.test(msg) ||
-          /is not a valid start|is not a valid end|is not a valid chr/i.test(msg)
+          /is not a valid start|is not a valid end|is not a valid chr/i.test(msg) ||
+          /no slice found/i.test(msg)
         ) {
           throw ctx.fail('invalid_region', `Invalid region "${input.region}": ${msg}`);
         }
@@ -144,7 +145,8 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     if (features.length === 0) {
       ctx.enrich.notice(
         `No ${input.feature.join(', ')} features found in ${input.region} for ${input.species}. ` +
-          'The region may be intergenic or use a different chromosome naming convention.',
+          'The region may be intergenic. Chromosome names use no "chr" prefix for vertebrates ' +
+          '(e.g. 13, not chr13). Use ensembl_lookup_gene to confirm locus coordinates.',
       );
     } else if (features.length > 1000) {
       ctx.enrich.notice(

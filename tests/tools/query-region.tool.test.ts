@@ -3,7 +3,7 @@
  * @module tests/tools/query-region.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { ensemblQueryRegion } from '@/mcp-server/tools/definitions/query-region.tool.js';
 import type { OverlapFeature } from '@/services/ensembl/types.js';
@@ -92,6 +92,18 @@ describe('ensemblQueryRegion', () => {
     });
   });
 
+  it('throws invalid_region when Ensembl returns "No slice found for location"', async () => {
+    mockQueryRegion.mockRejectedValueOnce(new Error('No slice found for location notaregion'));
+    const ctx = createMockContext({ errors: ensemblQueryRegion.errors });
+    const input = ensemblQueryRegion.input.parse({
+      species: 'homo_sapiens',
+      region: 'notaregion',
+    });
+    await expect(ensemblQueryRegion.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'invalid_region' },
+    });
+  });
+
   it('throws invalid_species on unrecognized species', async () => {
     mockQueryRegion.mockRejectedValueOnce(new Error('species invalid unrecognized'));
     const ctx = createMockContext({ errors: ensemblQueryRegion.errors });
@@ -114,6 +126,19 @@ describe('ensemblQueryRegion', () => {
     const result = await ensemblQueryRegion.handler(input, ctx);
     expect(result.totalCount).toBe(0);
     expect(result.features).toHaveLength(0);
+  });
+
+  it('empty result notice includes chr-prefix guidance and lookup hint', async () => {
+    mockQueryRegion.mockResolvedValueOnce([]);
+    const ctx = createMockContext({ errors: ensemblQueryRegion.errors });
+    const input = ensemblQueryRegion.input.parse({
+      species: 'homo_sapiens',
+      region: '13:1000-2000',
+    });
+    await ensemblQueryRegion.handler(input, ctx);
+    const { notice } = getEnrichment(ctx) as { notice?: string };
+    expect(notice).toContain('no "chr" prefix');
+    expect(notice).toContain('ensembl_lookup_gene');
   });
 
   it('formats features with location and type', () => {
