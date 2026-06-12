@@ -19,6 +19,8 @@ import { ensemblQueryRegion } from './mcp-server/tools/definitions/query-region.
 import { initEnsemblService } from './services/ensembl/ensembl-service.js';
 
 await createApp({
+  name: 'ensembl-mcp-server',
+  title: 'ensembl-mcp-server',
   tools: [
     ensemblListSpecies,
     ensemblLookupGene,
