@@ -161,7 +161,7 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
     },
     {
       reason: 'no_input',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       when: 'Neither symbol, id, ids, nor symbols was provided.',
       recovery:
         'Provide exactly one of: symbol (with species), id, ids array, or symbols array (with species).',

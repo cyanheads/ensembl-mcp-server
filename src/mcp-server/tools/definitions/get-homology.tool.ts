@@ -125,7 +125,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     },
     {
       reason: 'no_input',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       when: 'Neither symbol nor id was provided.',
       recovery: 'Provide either symbol (with species) or a stable Ensembl gene ID.',
     },
