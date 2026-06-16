@@ -1,5 +1,5 @@
 {
-  "@cyanheads/ensembl-mcp-server": {
+  "ensembl-mcp-server": {
     "command": "npx",
     "args": ["-y", "@cyanheads/ensembl-mcp-server"],
     "env": {
