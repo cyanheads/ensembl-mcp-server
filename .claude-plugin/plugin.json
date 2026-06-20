@@ -1,6 +1,6 @@
 {
   "name": "ensembl-mcp-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Look up genes, fetch sequences, predict variant consequences, find orthologs and cross-database xrefs via Ensembl REST via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads"
