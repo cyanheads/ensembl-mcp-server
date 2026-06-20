@@ -1,6 +1,6 @@
 {
   "name": "ensembl-mcp-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Look up genes, fetch sequences, predict variant consequences, find orthologs and cross-database xrefs via Ensembl REST via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "ensembl-mcp-server",
     "shortDescription": "Look up genes, fetch sequences, predict variant consequences, find orthologs and cross-database xrefs via Ensembl REST via MCP. STDIO or Streamable HTTP.",
-    "longDescription": "",
+    "longDescription": "MCP server for the Ensembl REST API, covering vertebrate and model-organism genomics. Resolve genes by symbol or stable ID (ensembl_lookup_gene), fetch genomic/cDNA/CDS/protein sequence (ensembl_get_sequence), list overlapping features in a region (ensembl_query_region), predict variant consequences via VEP (ensembl_predict_variant), retrieve orthologs and paralogs (ensembl_get_homology), follow external cross-references (ensembl_get_xrefs), and enumerate available species (ensembl_list_species). Gene, transcript, and species records are also exposed as addressable resources, and the ensembl_gene_dossier prompt chains the tools into a complete gene research workflow. Species use Ensembl's lowercase_underscore scientific names (homo_sapiens, mus_musculus); set ENSEMBL_BASE_URL to target GRCh37 or a local mirror. Runs over stdio or Streamable HTTP.",
     "developerName": "cyanheads",
     "category": "bioinformatics",
     "capabilities": ["Read"],
