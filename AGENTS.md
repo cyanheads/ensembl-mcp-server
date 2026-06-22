@@ -1,7 +1,7 @@
 # Developer Protocol
 
 **Server:** ensembl-mcp-server
-**Version:** 0.1.5
+**Version:** 0.2.0
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.10.9`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
@@ -55,7 +55,7 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
   description: 'Resolve a gene by symbol + species or by Ensembl stable ID.',
   annotations: { readOnlyHint: true, openWorldHint: true },
   input: z.object({
-    symbol: z.string().optional().describe('Gene symbol (e.g. BRCA2, TP53). Requires species.'),
+    symbol: z.string().optional().describe('Gene symbol (e.g. BRCA2, TP53). Species defaults to homo_sapiens.'),
     id: z.string().optional().describe('Ensembl stable ID (ENSG…).'),
     species: z.string().default('homo_sapiens').describe('Species in Ensembl format.'),
   }),
