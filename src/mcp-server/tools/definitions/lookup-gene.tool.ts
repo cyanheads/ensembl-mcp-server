@@ -78,8 +78,9 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
     '(chr:start-end:strand), biotype, description, and transcript list. Entry point for most workflows — ' +
     'the stable ID and coordinates returned here are inputs to other tools. Accepts both symbol lookup ' +
     '(BRCA2 + homo_sapiens) and direct ID lookup (ENSG00000139618). Supports batch lookup of up to 20 ' +
-    'IDs or symbols in one call via the ids or symbols field. For symbol lookup, species is required; ' +
-    'for ID lookup, species is not needed. Use ensembl_list_species to discover valid species names.',
+    'IDs or symbols in one call via the ids or symbols field. Provide exactly one of symbol, id, ids, ' +
+    'or symbols. For symbol lookups species defaults to homo_sapiens (override for other organisms); ' +
+    'for ID lookups species is not needed. Use ensembl_list_species to discover valid species names.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     symbol: z
@@ -87,7 +88,8 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       .optional()
       .describe(
         'Gene symbol to look up (e.g. BRCA2, TP53, EGFR). ' +
-          'Requires species to be set. Case-insensitive in most species.',
+          'Species defaults to homo_sapiens; set species for other organisms. ' +
+          'Case-insensitive in most species.',
       ),
     id: z
       .string()
@@ -102,7 +104,7 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       .describe(
         'Species in Ensembl internal format: lowercase scientific name with underscores ' +
           '(e.g. homo_sapiens, mus_musculus, danio_rerio). ' +
-          'Required when using symbol. Default is homo_sapiens for symbol-based lookups. ' +
+          'Optional for symbol lookups — defaults to homo_sapiens; set it for other organisms. ' +
           'Use ensembl_list_species to discover valid values.',
       ),
     ids: z
@@ -113,7 +115,7 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       .optional()
       .describe(
         'Batch lookup: up to 20 Ensembl stable IDs (ENSG…, ENST…). ' +
-          'Returns a succeeded/failed split. Cannot be combined with symbol or id.',
+          'Returns a succeeded/failed split. Provide exactly one of symbol, id, ids, or symbols.',
       ),
     symbols: z
       .array(z.string().describe('A gene symbol to resolve in this batch (e.g. BRCA2, TP53).'))
@@ -121,8 +123,8 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       .optional()
       .describe(
         'Batch lookup: up to 20 gene symbols. ' +
-          'Requires species to be set. Returns a succeeded/failed split. ' +
-          'Cannot be combined with symbol, id, or ids.',
+          'Species defaults to homo_sapiens; set species for other organisms. ' +
+          'Returns a succeeded/failed split. Provide exactly one of symbol, id, ids, or symbols.',
       ),
     expand_transcripts: z
       .boolean()
@@ -166,6 +168,13 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       recovery:
         'Provide exactly one of: symbol (with species), id, ids array, or symbols array (with species).',
     },
+    {
+      reason: 'conflicting_input',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'More than one of symbol, id, ids, or symbols was provided.',
+      recovery:
+        'Provide exactly one input: a symbol, a stable id, an ids array, or a symbols array.',
+    },
   ],
 
   async handler(input, ctx) {
@@ -176,6 +185,16 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       batchSize: input.ids?.length ?? input.symbols?.length,
     });
     const service = getEnsemblService();
+
+    const inputCount = [
+      input.symbol?.trim(),
+      input.id?.trim(),
+      input.ids?.length,
+      input.symbols?.length,
+    ].filter(Boolean).length;
+    if (inputCount > 1) {
+      throw ctx.fail('conflicting_input', 'Provide exactly one of: symbol, id, ids, or symbols.');
+    }
 
     // --- Batch by IDs ---
     if (input.ids?.length) {

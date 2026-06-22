@@ -143,6 +143,14 @@ describe('ensemblLookupGene', () => {
     });
   });
 
+  it('throws conflicting_input when more than one of symbol/id/ids/symbols is provided', async () => {
+    const ctx = createMockContext({ errors: ensemblLookupGene.errors });
+    const input = ensemblLookupGene.input.parse({ symbol: 'TP53', id: 'ENSG00000139618' });
+    await expect(ensemblLookupGene.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'conflicting_input' },
+    });
+  });
+
   it('formats single gene result with all fields', () => {
     const output = { gene: brca2Gene };
     const blocks = ensemblLookupGene.format!(output);

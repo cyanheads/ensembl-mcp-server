@@ -62,7 +62,8 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       .optional()
       .describe(
         'Gene symbol in the source species (e.g. BRCA2, TP53). ' +
-          'Requires species to be set. Cannot be used together with id.',
+          'Species defaults to homo_sapiens; set species for other organisms. ' +
+          'Cannot be combined with id.',
       ),
     id: z
       .string()
@@ -70,7 +71,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       .describe(
         'Ensembl stable gene ID (e.g. ENSG00000139618). ' +
           'Use ensembl_lookup_gene to get the stable ID from a symbol. ' +
-          'Cannot be used together with symbol.',
+          'Cannot be combined with symbol.',
       ),
     species: z
       .string()
@@ -129,6 +130,13 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       when: 'Neither symbol nor id was provided.',
       recovery: 'Provide either symbol (with species) or a stable Ensembl gene ID.',
     },
+    {
+      reason: 'conflicting_input',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Both symbol and id were provided.',
+      recovery:
+        'Provide exactly one: a gene symbol (with optional species) or a stable Ensembl gene ID.',
+    },
   ],
 
   async handler(input, ctx) {
@@ -143,6 +151,12 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
 
     if (!input.symbol?.trim() && !input.id?.trim()) {
       throw ctx.fail('no_input', 'Provide either symbol (with species) or a stable gene ID.');
+    }
+    if (input.id?.trim() && input.symbol?.trim()) {
+      throw ctx.fail(
+        'conflicting_input',
+        'Provide either symbol or id, not both — they may resolve to different genes.',
+      );
     }
 
     const idTrimmed = input.id?.trim();

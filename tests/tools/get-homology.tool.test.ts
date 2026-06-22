@@ -93,6 +93,18 @@ describe('ensemblGetHomology', () => {
     });
   });
 
+  it('throws conflicting_input when both symbol and id are provided', async () => {
+    const ctx = createMockContext({ errors: ensemblGetHomology.errors });
+    const input = ensemblGetHomology.input.parse({
+      id: 'ENSG00000139618',
+      symbol: 'TP53',
+      species: 'homo_sapiens',
+    });
+    await expect(ensemblGetHomology.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'conflicting_input' },
+    });
+  });
+
   it('throws not_found when gene is unknown', async () => {
     mockGetHomologyBySymbol.mockRejectedValueOnce(new Error('Gene not found in Ensembl'));
     const ctx = createMockContext({ errors: ensemblGetHomology.errors });
