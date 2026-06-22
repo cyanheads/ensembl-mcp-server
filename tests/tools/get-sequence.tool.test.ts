@@ -22,7 +22,7 @@ const mockSequence: SequenceRecord = {
   id: 'ENSG00000139618',
   type: 'genomic',
   seq: 'ATCGATCGATCG',
-  lengthInBp: 12,
+  length: 12,
   description: 'BRCA2 gene genomic sequence',
 };
 
@@ -30,7 +30,7 @@ const mockProteinSeq: SequenceRecord = {
   id: 'ENST00000380152',
   type: 'protein',
   seq: 'MPIGSKERPTFFEIFKTRCNKADLTHGGFKV',
-  lengthInBp: 31,
+  length: 31,
 };
 
 describe('ensemblGetSequence', () => {
@@ -42,7 +42,7 @@ describe('ensemblGetSequence', () => {
     expect(result.id).toBe('ENSG00000139618');
     expect(result.type).toBe('genomic');
     expect(result.seq).toBe('ATCGATCGATCG');
-    expect(result.lengthInBp).toBe(12);
+    expect(result.length).toBe(12);
   });
 
   it('defaults type to genomic when not specified', async () => {
@@ -64,6 +64,17 @@ describe('ensemblGetSequence', () => {
     const result = await ensemblGetSequence.handler(input, ctx);
     expect(result.type).toBe('protein');
     expect(result.seq).toContain('M');
+  });
+
+  it('reports protein length in residues, not base pairs', async () => {
+    mockGetSequenceById.mockResolvedValueOnce(mockProteinSeq);
+    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
+    const input = ensemblGetSequence.input.parse({ id: 'ENST00000380152', type: 'protein' });
+    const result = await ensemblGetSequence.handler(input, ctx);
+    expect(result.length).toBe(31);
+    const text = (ensemblGetSequence.format!(result)[0] as { type: 'text'; text: string }).text;
+    expect(text).toContain('31 residues');
+    expect(text).not.toContain('bp/aa');
   });
 
   it('detects region mode and calls getSequenceByRegion', async () => {
@@ -131,7 +142,7 @@ describe('ensemblGetSequence', () => {
   });
 
   it('formats short sequence inline without truncation', () => {
-    const output = { id: 'ENST00000380152', type: 'protein', seq: 'MPIGSKER', lengthInBp: 8 };
+    const output = { id: 'ENST00000380152', type: 'protein', seq: 'MPIGSKER', length: 8 };
     const blocks = ensemblGetSequence.format!(output);
     const text = (blocks[0] as { type: 'text'; text: string }).text;
     expect(text).toContain('ENST00000380152');
@@ -142,10 +153,11 @@ describe('ensemblGetSequence', () => {
 
   it('formats long sequence with truncation notice', () => {
     const longSeq = 'A'.repeat(300);
-    const output = { id: 'ENSG00000139618', type: 'genomic', seq: longSeq, lengthInBp: 300 };
+    const output = { id: 'ENSG00000139618', type: 'genomic', seq: longSeq, length: 300 };
     const blocks = ensemblGetSequence.format!(output);
     const text = (blocks[0] as { type: 'text'; text: string }).text;
     expect(text).toContain('total characters');
+    expect(text).toContain('300 bp');
     // Only first 200 chars shown
     expect(text).toContain('A'.repeat(200));
   });
@@ -155,7 +167,7 @@ describe('ensemblGetSequence', () => {
       id: 'ENSG00000139618',
       type: 'genomic',
       seq: 'ATCG',
-      lengthInBp: 4,
+      length: 4,
       description: 'BRCA2 genomic',
     };
     const blocks = ensemblGetSequence.format!(output);

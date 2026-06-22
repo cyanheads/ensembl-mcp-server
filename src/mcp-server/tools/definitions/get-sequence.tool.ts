@@ -76,10 +76,10 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
           'Protein sequences use single-letter amino acid codes. ' +
           'Large genomic sequences (e.g. 85 kb for BRCA2) are returned in full.',
       ),
-    lengthInBp: z
+    length: z
       .number()
       .describe(
-        'Sequence length in characters (nucleotides or amino acids). ' +
+        'Sequence length in characters — nucleotides for genomic/cdna/cds, amino-acid residues for protein. ' +
           'Use this to budget context window usage before processing the sequence.',
       ),
     description: z.string().optional().describe('Sequence description from Ensembl, if provided.'),
@@ -166,16 +166,15 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
   format: (result) => {
     const lines: string[] = [];
     lines.push(`## Sequence: ${result.id}`);
-    lines.push(
-      `**Type:** ${result.type} | **Length:** ${result.lengthInBp.toLocaleString()} bp/aa`,
-    );
+    const unit = result.type === 'protein' ? 'residues' : 'bp';
+    lines.push(`**Type:** ${result.type} | **Length:** ${result.length.toLocaleString()} ${unit}`);
     if (result.description) lines.push(`**Description:** ${result.description}`);
     lines.push('');
     // Show first 200 chars + truncation note for large sequences
     if (result.seq.length > 200) {
       lines.push('```');
       lines.push(result.seq.slice(0, 200));
-      lines.push(`… (${result.lengthInBp.toLocaleString()} total characters)`);
+      lines.push(`… (${result.length.toLocaleString()} total characters)`);
       lines.push('```');
     } else {
       lines.push('```');

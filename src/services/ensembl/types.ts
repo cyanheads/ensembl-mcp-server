@@ -225,7 +225,7 @@ export type SequenceRecord = {
   id: string;
   type: string;
   seq: string;
-  lengthInBp: number;
+  length: number;
   description?: string;
 };
 

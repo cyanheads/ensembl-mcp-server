@@ -82,7 +82,7 @@ function normalizeSequence(raw: RawSequenceRecord, type: string): SequenceRecord
     id: raw.id,
     type,
     seq: raw.seq,
-    lengthInBp: raw.seq.length,
+    length: raw.seq.length,
     ...(raw.desc && { description: raw.desc }),
   };
 }
