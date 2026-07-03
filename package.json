@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/ensembl-mcp-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "mcpName": "io.github.cyanheads/ensembl-mcp-server",
   "description": "Look up genes, fetch sequences, predict variant consequences, find orthologs and cross-database xrefs via Ensembl REST via MCP. STDIO or Streamable HTTP.",
   "type": "module",
@@ -90,7 +90,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@cyanheads/mcp-ts-core": "^0.10.9",
+    "@cyanheads/mcp-ts-core": "^0.10.10",
     "pino-pretty": "^13.1.3",
     "zod": "^4.4.3"
   },

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-07-03 · 🛡️ Security
+
+Adds a division-addressable ensembl://species/{division} resource; ensembl_get_homology symbol queries now return the resolved Ensembl stable gene ID as queryId; mcp-ts-core 0.10.10 clears 7 transitive vulnerabilities (bun audit 7 → 0)
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-06-21 · ⚠️ Breaking
 
 Breaking: ensembl_get_sequence output field lengthInBp → length (unit-aware); ensembl_get_homology and ensembl_lookup_gene now reject more than one of symbol/id/ids/symbols; symbol descriptions corrected to state species defaults to homo_sapiens

@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/ensembl-mcp-server</h1>
   <p><b>Look up genes, fetch sequences, predict variant consequences, find orthologs and cross-database xrefs via Ensembl REST via MCP. STDIO or Streamable HTTP.</b>
-  <div>7 Tools • 3 Resources • 1 Prompt</div>
+  <div>7 Tools • 4 Resources • 1 Prompt</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/ensembl-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/ensembl-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/ensembl-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.3.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/ensembl-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/ensembl-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/ensembl-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -122,10 +122,11 @@ Full cross-database reference set for any Ensembl feature.
 |:-----|:-----|:------------|
 | Resource | `ensembl://gene/{id}` | Gene record by stable ID (`ENSG…`) — location, biotype, description, and transcript list |
 | Resource | `ensembl://transcript/{id}` | Transcript record by stable ID (`ENST…`) — parent gene, location, biotype, canonical flag, and length |
-| Resource | `ensembl://species` | Full list of supported Ensembl species with name, display name, assembly, taxon ID, and division |
+| Resource | `ensembl://species` | Supported Ensembl species for the endpoint default division (vertebrates on the default endpoint) with name, display name, assembly, taxon ID, and division |
+| Resource | `ensembl://species/{division}` | Supported species in one division (`EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, `EnsemblProtists`) |
 | Prompt | `ensembl_gene_dossier` | Structured workflow for assembling a complete gene profile: symbol → ID + location → sequence → variants → orthologs → xrefs |
 
-All resource data is also reachable via tools. The `ensembl://species` resource provides the full species catalog with cursor pagination; `ensembl_list_species` is the tool equivalent with filtering support.
+All resource data is also reachable via tools. `ensembl://species` returns the endpoint default division (vertebrates) and `ensembl://species/{division}` returns a named division; `ensembl_list_species` is the tool equivalent, filtering by division and name.
 
 ## Features
 
