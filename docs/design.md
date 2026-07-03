@@ -20,7 +20,8 @@
 |:-------------|:------------|:-----------|
 | `ensembl://gene/{id}` | Gene record by stable ID (`ENSG…`). Returns location, biotype, description, and transcript list. Stable, injectable context for multi-step workflows. | None needed — single entity |
 | `ensembl://transcript/{id}` | Transcript record by stable ID (`ENST…`). Returns parent gene, location, biotype, canonical flag, and length. | None needed — single entity |
-| `ensembl://species` | List of all supported Ensembl species with name, display name, assembly, taxon ID, and division. Addressable reference for tool bootstrapping. | Cursor — 348 vertebrate species + non-vertebrate divisions |
+| `ensembl://species` | Ensembl species for the endpoint default division (vertebrates) with name, display name, assembly, taxon ID, and division. Addressable reference for tool bootstrapping. | None needed — endpoint default division (~356 vertebrate species) |
+| `ensembl://species/{division}` | Supported species in a single Ensembl division (`EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, `EnsemblProtists`). Division-addressable counterpart to `ensembl://species` (the endpoint default division). | None needed — one division |
 
 ### Prompts
 

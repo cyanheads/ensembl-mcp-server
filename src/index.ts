@@ -7,7 +7,10 @@
 import { createApp } from '@cyanheads/mcp-ts-core';
 import { ensemblGeneDossierPrompt } from './mcp-server/prompts/definitions/gene-dossier.prompt.js';
 import { ensemblGeneResource } from './mcp-server/resources/definitions/gene.resource.js';
-import { ensemblSpeciesResource } from './mcp-server/resources/definitions/species.resource.js';
+import {
+  ensemblSpeciesByDivisionResource,
+  ensemblSpeciesResource,
+} from './mcp-server/resources/definitions/species.resource.js';
 import { ensemblTranscriptResource } from './mcp-server/resources/definitions/transcript.resource.js';
 import { ensemblGetHomology } from './mcp-server/tools/definitions/get-homology.tool.js';
 import { ensemblGetSequence } from './mcp-server/tools/definitions/get-sequence.tool.js';
@@ -30,7 +33,12 @@ await createApp({
     ensemblGetHomology,
     ensemblGetXrefs,
   ],
-  resources: [ensemblGeneResource, ensemblTranscriptResource, ensemblSpeciesResource],
+  resources: [
+    ensemblGeneResource,
+    ensemblTranscriptResource,
+    ensemblSpeciesResource,
+    ensemblSpeciesByDivisionResource,
+  ],
   prompts: [ensemblGeneDossierPrompt],
   instructions: `Ensembl genomics server — vertebrate and model organism gene, sequence, and variant data.
 Species names use Ensembl internal format: lowercase_underscore scientific names (homo_sapiens, mus_musculus).
