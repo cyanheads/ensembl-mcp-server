@@ -41,9 +41,12 @@ export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
           `transcript ID from step 1 and type="protein". Record the amino acid sequence and its length.\n\n` +
           `3. **Find variants in the locus** — call \`ensembl_query_region\` with ` +
           `species="${args.species}", the gene's chromosomal region (chr:start-end from step 1), ` +
-          `and feature=["variation"]. Identify any HIGH or MODERATE impact variants.\n\n` +
-          `4. **Predict variant consequences** — for up to 3 high-impact variants found in step 3, ` +
-          `call \`ensembl_predict_variant\` with the variant ID or HGVS notation. ` +
+          `and feature=["variation"]. Record the variant IDs (rsIDs), positions, consequence type, ` +
+          `and any clinical significance. Functional impact (HIGH/MODERATE/LOW) is not reported by ` +
+          `this step — it comes from VEP in step 4.\n\n` +
+          `4. **Predict variant consequences** — for up to 3 variants from step 3, ` +
+          `call \`ensembl_predict_variant\` with each variant's rsID (e.g. rs334), HGVS notation, ` +
+          `or region+allele. This step returns the functional impact. ` +
           `Record most_severe_consequence, impact, and clinical significance.\n\n` +
           `5. **Find cross-species orthologs** — call \`ensembl_get_homology\` with ` +
           `symbol="${args.gene_symbol}", species="${args.species}", and type="orthologues". ` +

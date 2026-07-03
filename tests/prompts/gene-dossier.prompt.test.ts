@@ -55,6 +55,19 @@ describe('ensemblGeneDossierPrompt', () => {
     expect(text).toContain('Synthesize');
   });
 
+  it('sources functional impact from VEP, not query_region, and offers rsID input (issue #7)', () => {
+    const args = ensemblGeneDossierPrompt.args!.parse({ gene_symbol: 'BRCA2' });
+    const text = (
+      ensemblGeneDossierPrompt.generate(args)[0]!.content as { type: string; text: string }
+    ).text;
+    // Step 3 must not claim ensembl_query_region can identify functional impact before VEP.
+    expect(text).not.toContain('Identify any HIGH or MODERATE impact');
+    expect(text).toContain('comes from VEP');
+    // Step 4's rsID example is valid now that ensembl_predict_variant accepts rsIDs (#11).
+    expect(text).toContain('rsID');
+    expect(text).toContain('rs334');
+  });
+
   it('message role is "user"', () => {
     const args = ensemblGeneDossierPrompt.args!.parse({ gene_symbol: 'BRCA2' });
     const messages = ensemblGeneDossierPrompt.generate(args);
