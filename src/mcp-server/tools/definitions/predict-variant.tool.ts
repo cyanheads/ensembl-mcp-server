@@ -117,23 +117,26 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
   title: 'Predict Variant Effect',
   description:
     'Predict the functional consequences of a sequence variant using the Ensembl Variant Effect Predictor (VEP). ' +
-    'Accepts HGVS notation (transcript-relative, e.g. ENST00000380152.8:c.2T>A, or genomic, ' +
-    'e.g. 13:g.32316462T>A) and also region+allele format (chr:start:end:strand/allele, ' +
-    'e.g. 1:65568:65568:1/T). Returns the most severe consequence term, affected transcripts and genes, ' +
+    'Accepts three input formats: HGVS notation (transcript-relative, e.g. ENST00000380152.8:c.2T>A, ' +
+    'or genomic, e.g. 13:g.32316462T>A); region+allele (chr:start:end:strand/allele, e.g. 1:65568:65568:1/T); ' +
+    'and a dbSNP rsID (e.g. rs334). Returns the most severe consequence term, affected transcripts and genes, ' +
     'impact level (HIGH/MODERATE/LOW/MODIFIER), and any colocated known variants with clinical significance. ' +
     'HGVS input: provide the full notation including transcript version for best results. ' +
-    'Region+allele input: use Ensembl chromosome naming (no chr prefix for vertebrates).',
+    'Region+allele input: Ensembl normalizes chromosome names and canonical vertebrate output omits the chr ' +
+    'prefix (a chr-prefixed name is also accepted).',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     variant: z
       .string()
       .describe(
-        'Variant in one of two formats: ' +
+        'Variant in one of three formats: ' +
           '(1) HGVS notation — transcript-relative: ENST00000380152.8:c.2T>A; ' +
           'genomic: 13:g.32316462T>A; ' +
-          '(2) Region+allele: chr:start:end:strand/allele — e.g. 1:65568:65568:1/T. ' +
-          'For region+allele, strand is 1 (forward) or -1 (reverse); ' +
-          'chromosome names use no "chr" prefix for vertebrates.',
+          '(2) Region+allele: chr:start:end:strand/allele — e.g. 1:65568:65568:1/T ' +
+          '(strand is 1 for forward or -1 for reverse); ' +
+          '(3) dbSNP rsID — e.g. rs334. ' +
+          'Ensembl normalizes chromosome names; canonical vertebrate output omits the "chr" prefix, ' +
+          'though a chr-prefixed name is also accepted.',
       ),
     species: z
       .string()
@@ -167,9 +170,8 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'The variant notation is malformed or cannot be parsed by VEP.',
       recovery:
-        'Check HGVS format: transcript-relative uses ENST…:c.POSREF>ALT; ' +
-        'genomic uses CHR:g.POSREF>ALT. ' +
-        'Region+allele format is chr:start:end:strand/allele. ' +
+        'Provide HGVS (transcript-relative ENST…:c.POSREF>ALT or genomic CHR:g.POSREF>ALT), ' +
+        'region+allele (chr:start:end:strand/allele), or a dbSNP rsID (e.g. rs334). ' +
         'Verify the transcript version matches the current Ensembl release.',
     },
     {
@@ -186,8 +188,10 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
     ctx.log.info('Predicting variant effect', { variant: input.variant, species: input.species });
     const service = getEnsemblService();
 
-    // Detect region+allele format: chr:start:end:strand/allele
+    // Route by input format: region+allele (chr:start:end:strand/allele) → /region;
+    // else a dbSNP rsID (rs followed by digits) → /id; else HGVS notation → /hgvs.
     const regionAllelePattern = /^([^:]+):(\d+):(\d+):(-?1)\/(.+)$/;
+    const rsIdPattern = /^rs\d+$/i;
     const regionMatch = input.variant.match(regionAllelePattern);
 
     let results: VepRecord[];
@@ -220,6 +224,23 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
           }
           if (/not found|outside/i.test(msg)) {
             throw ctx.fail('not_found', `Variant location not found: ${msg}`);
+          }
+          throw err;
+        });
+    } else if (rsIdPattern.test(input.variant)) {
+      results = await service
+        .predictVariantId(input.variant, input.species, ctx)
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          // A well-formed rsID that dbSNP does not know reports "No variant found with ID …".
+          if (/not found|no variant|unknown variant/i.test(msg)) {
+            throw ctx.fail('not_found', `Variant identifier ${input.variant} not found in dbSNP.`);
+          }
+          if (/invalid|unrecognized|parse|malformed/i.test(msg)) {
+            throw ctx.fail(
+              'invalid_notation',
+              `Invalid variant identifier "${input.variant}": ${msg}`,
+            );
           }
           throw err;
         });

@@ -32,6 +32,18 @@ const FeatureSchema = z.object({
     .array(z.string().describe('A clinical significance term for this variant.'))
     .optional()
     .describe('Clinical significance terms for variation features (e.g. pathogenic, benign).'),
+  parentId: z
+    .string()
+    .optional()
+    .describe(
+      'Parent transcript ID (ENST…) for exon features. An exon is reported once per parent ' +
+        'transcript it belongs to, so the same exon ID can appear on multiple rows that differ ' +
+        'only by this field — not duplicates.',
+    ),
+  rank: z
+    .number()
+    .optional()
+    .describe('Position (1-based) of an exon within its parent transcript.'),
 });
 
 export const ensemblQueryRegion = tool('ensembl_query_region', {
@@ -40,10 +52,12 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     'Find genomic features overlapping a chromosomal region: genes, transcripts, variants, regulatory ' +
     'elements, or exons. Returns each feature with its stable ID, type, location, biotype, and name. ' +
     'Useful for "what\'s in this locus?" and for seeding follow-up lookups. Region format is chr:start-end ' +
-    '(e.g. 13:32315086-32400268 for the BRCA2 locus). Chromosome names use Ensembl format — no "chr" ' +
-    'prefix for vertebrates (use 13 not chr13). The feature parameter defaults to gene only to prevent ' +
-    'overwhelming returns — requesting variation in an 85 kb region returns 44,000+ entries. Explicitly ' +
-    'include variation, regulatory, transcript, or exon only when needed.',
+    '(e.g. 13:32315086-32400268 for the BRCA2 locus). Ensembl normalizes chromosome names and canonical ' +
+    'vertebrate output omits the chr prefix (13, not chr13); a chr-prefixed name like chr13 is also ' +
+    'accepted. The feature parameter defaults to gene only to prevent overwhelming returns — requesting ' +
+    'variation in an 85 kb region returns 44,000+ entries. Explicitly include variation, regulatory, ' +
+    'transcript, or exon only when needed. Exon rows carry the parent transcript ID, so the same exon ' +
+    'appears once per transcript it belongs to.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     species: z
@@ -56,7 +70,8 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
       .string()
       .describe(
         'Genomic region in chr:start-end format (e.g. 13:32315086-32400268). ' +
-          'Chromosome names use Ensembl format — no "chr" prefix for vertebrates (13, not chr13). ' +
+          'Ensembl normalizes chromosome names and canonical vertebrate output omits the chr prefix ' +
+          '(13, not chr13); a chr-prefixed name like chr13 is also accepted. ' +
           'For large regions (>100 kb), limit to gene feature type to avoid overwhelming results.',
       ),
     feature: z
@@ -104,7 +119,8 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
       when: 'The region string could not be parsed or contains invalid coordinates.',
       recovery:
         'Use the format chr:start-end (e.g. 13:32315086-32400268). ' +
-        'Chromosome names use Ensembl format with no "chr" prefix for vertebrates. ' +
+        'Chromosome names normalize either way — canonical vertebrate names omit the chr prefix ' +
+        '(13, not chr13), but a chr-prefixed name is also accepted. ' +
         'Verify coordinates are within the chromosome bounds for the target assembly.',
     },
     {
@@ -145,8 +161,8 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     if (features.length === 0) {
       ctx.enrich.notice(
         `No ${input.feature.join(', ')} features found in ${input.region} for ${input.species}. ` +
-          'The region may be intergenic. Chromosome names use no "chr" prefix for vertebrates ' +
-          '(e.g. 13, not chr13). Use ensembl_lookup_gene to confirm locus coordinates.',
+          'The region may be intergenic, or the coordinates may not cover the intended locus. ' +
+          'Use ensembl_lookup_gene to confirm the locus coordinates.',
       );
     } else if (features.length > 1000) {
       ctx.enrich.notice(
@@ -183,6 +199,11 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
       lines.push(
         `**Location:** ${f.chromosome}:${f.start}-${f.end}${f.strand != null ? ` strand:${f.strand} (${f.strand === -1 ? '-' : '+'})` : ''}`,
       );
+      if (f.parentId) {
+        lines.push(
+          `**Parent transcript:** ${f.parentId}${f.rank != null ? ` (exon rank ${f.rank})` : ''}`,
+        );
+      }
       if (f.description) lines.push(`**Description:** ${f.description}`);
       if (f.consequenceType) lines.push(`**Consequence:** ${f.consequenceType}`);
       if (f.clinicalSignificance?.length) {

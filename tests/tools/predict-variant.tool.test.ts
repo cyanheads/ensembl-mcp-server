@@ -4,17 +4,19 @@
  */
 
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensemblPredictVariant } from '@/mcp-server/tools/definitions/predict-variant.tool.js';
 import type { VepRecord } from '@/services/ensembl/types.js';
 
 const mockPredictVariantHgvs = vi.fn();
 const mockPredictVariantRegion = vi.fn();
+const mockPredictVariantId = vi.fn();
 
 vi.mock('@/services/ensembl/ensembl-service.js', () => ({
   getEnsemblService: () => ({
     predictVariantHgvs: mockPredictVariantHgvs,
     predictVariantRegion: mockPredictVariantRegion,
+    predictVariantId: mockPredictVariantId,
   }),
 }));
 
@@ -68,7 +70,33 @@ const regionResult: VepRecord = {
   colocatedVariants: [],
 };
 
+// Mirrors the live /vep/homo_sapiens/id/rs334 response shape (HBB / missense / MODERATE).
+const rsIdResult: VepRecord = {
+  input: 'rs334',
+  chromosome: '11',
+  start: 5227002,
+  end: 5227002,
+  assemblyName: 'GRCh38',
+  mostSevereConsequence: 'missense_variant',
+  transcriptConsequences: [
+    {
+      transcriptId: 'ENST00000335295',
+      geneId: 'ENSG00000244734',
+      geneSymbol: 'HBB',
+      consequenceTerms: ['missense_variant'],
+      impact: 'MODERATE',
+      biotype: 'protein_coding',
+      aminoAcids: 'E/V',
+    },
+  ],
+  colocatedVariants: [{ id: 'rs334', alleleString: 'T/A' }],
+};
+
 describe('ensemblPredictVariant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('processes HGVS notation via predictVariantHgvs', async () => {
     mockPredictVariantHgvs.mockResolvedValueOnce([missenseResult]);
     const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
@@ -99,6 +127,52 @@ describe('ensemblPredictVariant', () => {
       'homo_sapiens',
       expect.anything(),
     );
+  });
+
+  it('routes a dbSNP rsID to predictVariantId (issue #11)', async () => {
+    mockPredictVariantId.mockResolvedValueOnce([rsIdResult]);
+    const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+    const input = ensemblPredictVariant.input.parse({ variant: 'rs334' });
+    const result = await ensemblPredictVariant.handler(input, ctx);
+    expect(mockPredictVariantId).toHaveBeenCalledWith('rs334', 'homo_sapiens', expect.anything());
+    // An rsID must not be misrouted to the HGVS or region endpoints.
+    expect(mockPredictVariantHgvs).not.toHaveBeenCalled();
+    expect(mockPredictVariantRegion).not.toHaveBeenCalled();
+    expect(result.results).toHaveLength(1);
+    const tc = result.results[0]!.transcriptConsequences[0]!;
+    expect(tc.geneSymbol).toBe('HBB');
+    expect(tc.consequenceTerms).toContain('missense_variant');
+    expect(tc.impact).toBe('MODERATE');
+  });
+
+  it('routes uppercase RS-prefixed identifiers to predictVariantId (issue #11)', async () => {
+    mockPredictVariantId.mockResolvedValueOnce([rsIdResult]);
+    const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+    const input = ensemblPredictVariant.input.parse({ variant: 'RS334' });
+    await ensemblPredictVariant.handler(input, ctx);
+    expect(mockPredictVariantId).toHaveBeenCalledWith('RS334', 'homo_sapiens', expect.anything());
+  });
+
+  it('keeps HGVS input on the HGVS endpoint, not the rsID endpoint (issue #11 routing)', async () => {
+    mockPredictVariantHgvs.mockResolvedValueOnce([missenseResult]);
+    const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+    await ensemblPredictVariant.handler(
+      ensemblPredictVariant.input.parse({ variant: 'ENST00000380152.8:c.2T>A' }),
+      ctx,
+    );
+    expect(mockPredictVariantHgvs).toHaveBeenCalledTimes(1);
+    expect(mockPredictVariantId).not.toHaveBeenCalled();
+  });
+
+  it('throws not_found for an unknown rsID (issue #11)', async () => {
+    mockPredictVariantId.mockRejectedValueOnce(
+      new Error("No variant found with ID 'rs99999999999'"),
+    );
+    const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+    const input = ensemblPredictVariant.input.parse({ variant: 'rs99999999999' });
+    await expect(ensemblPredictVariant.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'not_found' },
+    });
   });
 
   it('defaults species to homo_sapiens', () => {

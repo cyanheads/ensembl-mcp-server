@@ -82,6 +82,10 @@ export type RawOverlapFeature = {
   clinical_significance?: string[];
   alleles?: string[];
   source?: string;
+  /** Parent transcript stable ID (ENST…) for exon overlap rows. */
+  Parent?: string;
+  /** 1-based position of an exon within its parent transcript. */
+  rank?: number;
 };
 
 export type RawVepTranscriptConsequence = {
@@ -241,6 +245,14 @@ export type OverlapFeature = {
   description?: string;
   consequenceType?: string;
   clinicalSignificance?: string[];
+  /**
+   * Parent transcript stable ID (ENST…) for exon features. The same exon ID
+   * appears once per parent transcript it belongs to, so this is the
+   * discriminator that explains repeated exon rows in a region query.
+   */
+  parentId?: string;
+  /** 1-based rank of an exon within its parent transcript. */
+  rank?: number;
 };
 
 export type VepConsequence = {

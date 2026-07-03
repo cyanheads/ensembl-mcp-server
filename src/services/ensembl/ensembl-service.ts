@@ -103,6 +103,11 @@ function normalizeOverlapFeature(raw: RawOverlapFeature): OverlapFeature {
     ...(raw.clinical_significance?.length && {
       clinicalSignificance: raw.clinical_significance,
     }),
+    // Parent + rank are exon-specific here: an exon's Parent is its transcript.
+    // Other overlap types reuse `Parent` with different semantics (a transcript's
+    // Parent is its gene), so scope these to exons to avoid mislabeling other modes.
+    ...(raw.feature_type === 'exon' && raw.Parent && { parentId: raw.Parent }),
+    ...(raw.feature_type === 'exon' && typeof raw.rank === 'number' && { rank: raw.rank }),
   };
 }
 
@@ -430,6 +435,13 @@ export class EnsemblService {
   ): Promise<VepRecord[]> {
     const regionAllele = `${encodeURIComponent(`${chr}:${start}:${end}:${strand}`)}/${encodeURIComponent(allele)}`;
     const path = `/vep/${encodeURIComponent(species)}/region/${regionAllele}`;
+    const raw = await this.fetchWithRetry<RawVepRecord[]>(path, ctx);
+    if (!Array.isArray(raw)) return [];
+    return raw.map(normalizeVep);
+  }
+
+  async predictVariantId(id: string, species: string, ctx: Context): Promise<VepRecord[]> {
+    const path = `/vep/${encodeURIComponent(species)}/id/${encodeURIComponent(id)}`;
     const raw = await this.fetchWithRetry<RawVepRecord[]>(path, ctx);
     if (!Array.isArray(raw)) return [];
     return raw.map(normalizeVep);

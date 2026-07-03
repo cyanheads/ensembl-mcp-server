@@ -128,7 +128,7 @@ describe('ensemblQueryRegion', () => {
     expect(result.features).toHaveLength(0);
   });
 
-  it('empty result notice includes chr-prefix guidance and lookup hint', async () => {
+  it('empty result notice includes intergenic guidance and lookup hint', async () => {
     mockQueryRegion.mockResolvedValueOnce([]);
     const ctx = createMockContext({ errors: ensemblQueryRegion.errors });
     const input = ensemblQueryRegion.input.parse({
@@ -137,8 +137,10 @@ describe('ensemblQueryRegion', () => {
     });
     await ensemblQueryRegion.handler(input, ctx);
     const { notice } = getEnrichment(ctx) as { notice?: string };
-    expect(notice).toContain('no "chr" prefix');
+    expect(notice).toContain('intergenic');
     expect(notice).toContain('ensembl_lookup_gene');
+    // Issue #10: chr-prefixed names are accepted, so an empty result must not blame the chr prefix.
+    expect(notice).not.toContain('"chr" prefix');
   });
 
   it('formats features with location and type', () => {
@@ -167,6 +169,46 @@ describe('ensemblQueryRegion', () => {
     const blocks = ensemblQueryRegion.format!(output);
     const text = (blocks[0] as { type: 'text'; text: string }).text;
     expect(text).toContain('No features found');
+  });
+
+  it('renders parent transcript context for repeated exon rows (issue #9)', () => {
+    // The same exon ID is reported once per parent transcript it belongs to — the rows differ
+    // only by parentId, so surfacing that discriminator explains why the ID repeats.
+    const sharedExonId = 'ENSE00001484009';
+    const exonRows: OverlapFeature[] = [
+      {
+        id: sharedExonId,
+        featureType: 'exon',
+        chromosome: '13',
+        start: 32316422,
+        end: 32316527,
+        strand: 1,
+        parentId: 'ENST00000380152',
+        rank: 2,
+      },
+      {
+        id: sharedExonId,
+        featureType: 'exon',
+        chromosome: '13',
+        start: 32316422,
+        end: 32316527,
+        strand: 1,
+        parentId: 'ENST00000544455',
+        rank: 2,
+      },
+    ];
+    const output = {
+      features: exonRows,
+      totalCount: exonRows.length,
+      region: '13:32315086-32317000',
+      species: 'homo_sapiens',
+    };
+    const blocks = ensemblQueryRegion.format!(output);
+    const text = (blocks[0] as { type: 'text'; text: string }).text;
+    expect(text).toContain('Parent transcript');
+    expect(text).toContain('ENST00000380152');
+    expect(text).toContain('ENST00000544455');
+    expect(text).toContain('exon rank 2');
   });
 
   it('formats variation feature with clinicalSignificance', () => {
