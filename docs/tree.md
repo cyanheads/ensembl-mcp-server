@@ -1,6 +1,6 @@
 # ensembl-mcp-server - Directory Structure
 
-Generated on: 2026-07-03 13:42:46
+Generated on: 2026-07-03 14:33:15
 
 ```text
 ensembl-mcp-server/
@@ -23,6 +23,7 @@ ensembl-mcp-server/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -161,6 +162,8 @@ ensembl-mcp-server/
 │   │   ├── gene.resource.test.ts
 │   │   ├── species.resource.test.ts
 │   │   └── transcript.resource.test.ts
+│   ├── services/
+│   │   └── ensembl-service.test.ts
 │   └── tools/
 │       ├── get-homology.tool.test.ts
 │       ├── get-sequence.tool.test.ts

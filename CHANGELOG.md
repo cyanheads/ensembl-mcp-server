@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-07-03
+
+ensembl_predict_variant accepts dbSNP rsIDs via a new VEP /id endpoint; ensembl_query_region exon rows carry parentId/rank; chromosome-name docs corrected; gene-dossier prompt's variant workflow now attributes impact to VEP
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-07-03 · 🛡️ Security
 
 Adds a division-addressable ensembl://species/{division} resource; ensembl_get_homology symbol queries now return the resolved Ensembl stable gene ID as queryId; mcp-ts-core 0.10.10 clears 7 transitive vulnerabilities (bun audit 7 → 0)
