@@ -39,9 +39,9 @@ export const ensemblListSpecies = tool('ensembl_list_species', {
   description:
     'List species supported by Ensembl with display name, common name, assembly, taxon ID, and division. ' +
     'Required discovery step — species names like homo_sapiens are opaque to non-biologists and are the ' +
-    'input format every other Ensembl tool expects. Filter by division to limit results; use nameContains ' +
-    'to find a species by partial name match. Returns the full species catalog when no filters are applied ' +
-    '(EnsemblVertebrates has ~250 species; all divisions combined have ~1,000+).',
+    'input format every other Ensembl tool expects. Filter by division to select one; use nameContains ' +
+    'to find a species by partial name match. With no division, returns the endpoint default division — ' +
+    'the vertebrates (~356 species on the default GRCh38 endpoint); pass a division to list that division.',
   annotations: { readOnlyHint: true, openWorldHint: false, idempotentHint: true },
   input: z.object({
     division: z
@@ -52,7 +52,7 @@ export const ensemblListSpecies = tool('ensembl_list_species', {
           'EnsemblVertebrates includes human, mouse, zebrafish, and other vertebrates. ' +
           'EnsemblPlants covers crop and model plant genomes. ' +
           'EnsemblFungi, EnsemblMetazoa, EnsemblProtists cover non-vertebrate model organisms. ' +
-          'Omit to return all divisions.',
+          'Omit to return the endpoint default division (vertebrates).',
       ),
     nameContains: z
       .string()
