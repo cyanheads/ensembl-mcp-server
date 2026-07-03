@@ -36,29 +36,64 @@ const ratOrtholog: HomologyEntry = {
   taxonomyLevel: 'Amniota',
 };
 
+const BRCA2_ID = 'ENSG00000139618';
+const TP53_ID = 'ENSG00000141510';
+
 describe('ensemblGetHomology', () => {
-  it('finds orthologs by gene symbol', async () => {
-    mockGetHomologyBySymbol.mockResolvedValueOnce([mouseOrtholog, ratOrtholog]);
+  it('finds orthologs by gene symbol and returns the resolved stable ID as queryId', async () => {
+    mockGetHomologyBySymbol.mockResolvedValueOnce({
+      homologs: [mouseOrtholog, ratOrtholog],
+      resolvedQueryId: BRCA2_ID,
+    });
     const ctx = createMockContext({ errors: ensemblGetHomology.errors });
     const input = ensemblGetHomology.input.parse({ symbol: 'BRCA2', species: 'homo_sapiens' });
     const result = await ensemblGetHomology.handler(input, ctx);
     expect(result.homologs).toHaveLength(2);
     expect(result.totalCount).toBe(2);
-    expect(result.queryId).toBe('BRCA2');
+    // #6: queryId is the resolved Ensembl stable ID, not the submitted symbol.
+    expect(result.queryId).toBe(BRCA2_ID);
     expect(result.querySpecies).toBe('homo_sapiens');
     expect(result.queryType).toBe('orthologues');
   });
 
-  it('finds orthologs by stable gene ID', async () => {
-    mockGetHomologyById.mockResolvedValueOnce([mouseOrtholog]);
+  it('resolves a symbol query to a stable queryId, not the echoed symbol (#6 regression)', async () => {
+    // Mirrors the issue repro: TP53 symbol mode must surface ENSG00000141510.
+    mockGetHomologyBySymbol.mockResolvedValueOnce({
+      homologs: [mouseOrtholog],
+      resolvedQueryId: TP53_ID,
+    });
     const ctx = createMockContext({ errors: ensemblGetHomology.errors });
-    const input = ensemblGetHomology.input.parse({ id: 'ENSG00000139618' });
+    const input = ensemblGetHomology.input.parse({
+      symbol: 'TP53',
+      species: 'homo_sapiens',
+      target_species: 'mus_musculus',
+    });
+    const result = await ensemblGetHomology.handler(input, ctx);
+    expect(result.queryId).toBe(TP53_ID);
+    expect(result.queryId).not.toBe('TP53');
+  });
+
+  it('falls back to the submitted symbol when no query id resolves', async () => {
+    mockGetHomologyBySymbol.mockResolvedValueOnce({ homologs: [mouseOrtholog] });
+    const ctx = createMockContext({ errors: ensemblGetHomology.errors });
+    const input = ensemblGetHomology.input.parse({ symbol: 'BRCA2', species: 'homo_sapiens' });
+    const result = await ensemblGetHomology.handler(input, ctx);
+    expect(result.queryId).toBe('BRCA2');
+  });
+
+  it('finds orthologs by stable gene ID', async () => {
+    mockGetHomologyById.mockResolvedValueOnce({
+      homologs: [mouseOrtholog],
+      resolvedQueryId: BRCA2_ID,
+    });
+    const ctx = createMockContext({ errors: ensemblGetHomology.errors });
+    const input = ensemblGetHomology.input.parse({ id: BRCA2_ID });
     const result = await ensemblGetHomology.handler(input, ctx);
     expect(result.homologs).toHaveLength(1);
-    expect(result.queryId).toBe('ENSG00000139618');
+    expect(result.queryId).toBe(BRCA2_ID);
     // Verify species is forwarded to the service (required for correct API URL)
     expect(mockGetHomologyById).toHaveBeenCalledWith(
-      'ENSG00000139618',
+      BRCA2_ID,
       'homo_sapiens',
       expect.any(String),
       undefined,
@@ -67,7 +102,10 @@ describe('ensemblGetHomology', () => {
   });
 
   it('includes perc_id and perc_pos in ortholog results', async () => {
-    mockGetHomologyBySymbol.mockResolvedValueOnce([mouseOrtholog, ratOrtholog]);
+    mockGetHomologyBySymbol.mockResolvedValueOnce({
+      homologs: [mouseOrtholog, ratOrtholog],
+      resolvedQueryId: BRCA2_ID,
+    });
     const ctx = createMockContext({ errors: ensemblGetHomology.errors });
     const input = ensemblGetHomology.input.parse({ symbol: 'BRCA2' });
     const result = await ensemblGetHomology.handler(input, ctx);
@@ -96,7 +134,7 @@ describe('ensemblGetHomology', () => {
   it('throws conflicting_input when both symbol and id are provided', async () => {
     const ctx = createMockContext({ errors: ensemblGetHomology.errors });
     const input = ensemblGetHomology.input.parse({
-      id: 'ENSG00000139618',
+      id: BRCA2_ID,
       symbol: 'TP53',
       species: 'homo_sapiens',
     });
@@ -124,8 +162,8 @@ describe('ensemblGetHomology', () => {
     });
   });
 
-  it('returns empty list when no homologs found', async () => {
-    mockGetHomologyBySymbol.mockResolvedValueOnce([]);
+  it('returns empty list when no homologs found but still surfaces the resolved queryId', async () => {
+    mockGetHomologyBySymbol.mockResolvedValueOnce({ homologs: [], resolvedQueryId: BRCA2_ID });
     const ctx = createMockContext({ errors: ensemblGetHomology.errors });
     const input = ensemblGetHomology.input.parse({
       symbol: 'BRCA2',
@@ -134,13 +172,14 @@ describe('ensemblGetHomology', () => {
     const result = await ensemblGetHomology.handler(input, ctx);
     expect(result.totalCount).toBe(0);
     expect(result.homologs).toHaveLength(0);
+    expect(result.queryId).toBe(BRCA2_ID);
   });
 
   it('formats homology results with perc_id and perc_pos', () => {
     const output = {
       homologs: [mouseOrtholog, ratOrtholog],
       totalCount: 2,
-      queryId: 'BRCA2',
+      queryId: BRCA2_ID,
       querySpecies: 'homo_sapiens',
       queryType: 'orthologues',
     };
@@ -158,7 +197,7 @@ describe('ensemblGetHomology', () => {
     const output = {
       homologs: [],
       totalCount: 0,
-      queryId: 'BRCA2',
+      queryId: BRCA2_ID,
       querySpecies: 'homo_sapiens',
       queryType: 'orthologues',
     };
@@ -173,7 +212,7 @@ describe('ensemblGetHomology', () => {
     const output = {
       homologs: [sparseHomolog],
       totalCount: 1,
-      queryId: 'BRCA2',
+      queryId: BRCA2_ID,
       querySpecies: 'homo_sapiens',
       queryType: 'orthologues',
     };

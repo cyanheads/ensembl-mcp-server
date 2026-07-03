@@ -284,6 +284,18 @@ export type HomologyEntry = {
   taxonomyLevel?: string;
 };
 
+/**
+ * Homology lookup result. `resolvedQueryId` is the Ensembl stable gene ID the
+ * upstream response matched the query to (from the `data[].id` entry) — present
+ * for both symbol- and ID-mode queries, absent only when the response carries no
+ * data entry. Lets the tool surface a stable, chainable `queryId` even when the
+ * caller queried by symbol.
+ */
+export type HomologyResult = {
+  homologs: HomologyEntry[];
+  resolvedQueryId?: string;
+};
+
 export type XrefEntry = {
   dbname?: string;
   dbDisplayName?: string;

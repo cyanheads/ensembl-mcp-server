@@ -165,28 +165,37 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     let homologs: HomologyEntry[];
 
     if (idTrimmed) {
-      queryId = idTrimmed;
-      homologs = await service
-        .getHomologyById(queryId, input.species, input.type, input.target_species, ctx)
+      const result = await service
+        .getHomologyById(idTrimmed, input.species, input.type, input.target_species, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           if (/not found|no valid lookup|page not found/i.test(msg)) {
-            throw ctx.fail('not_found', `Gene ID "${queryId}" not found in Ensembl.`);
+            throw ctx.fail('not_found', `Gene ID "${idTrimmed}" not found in Ensembl.`);
           }
           throw err;
         });
+      homologs = result.homologs;
+      // Prefer the stable ID the upstream resolved the query to; fall back to the submitted ID.
+      queryId = result.resolvedQueryId ?? idTrimmed;
     } else {
-      queryId = symbolTrimmed ?? '';
-      homologs = await service
-        .getHomologyBySymbol(queryId, input.species, input.type, input.target_species, ctx)
+      const submittedSymbol = symbolTrimmed ?? '';
+      const result = await service
+        .getHomologyBySymbol(submittedSymbol, input.species, input.type, input.target_species, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           // Ensembl returns {"error":"<species_name>"} for invalid gene symbols in homology endpoint
           if (/not found|no valid lookup/i.test(msg) || msg === input.species) {
-            throw ctx.fail('not_found', `Gene symbol "${queryId}" not found in ${input.species}.`);
+            throw ctx.fail(
+              'not_found',
+              `Gene symbol "${submittedSymbol}" not found in ${input.species}.`,
+            );
           }
           throw err;
         });
+      homologs = result.homologs;
+      // Surface the resolved Ensembl stable gene ID rather than echoing the symbol (#6);
+      // fall back to the submitted symbol only when the response carried no data entry.
+      queryId = result.resolvedQueryId ?? submittedSymbol;
     }
 
     if (homologs.length === 0) {

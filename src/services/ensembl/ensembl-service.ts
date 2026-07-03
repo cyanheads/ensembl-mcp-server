@@ -14,6 +14,7 @@ import type {
   EnsemblErrorEnvelope,
   GeneRecord,
   HomologyEntry,
+  HomologyResult,
   OverlapFeature,
   RawGeneRecord,
   RawHomologyResponse,
@@ -139,10 +140,9 @@ function normalizeVep(raw: RawVepRecord): VepRecord {
   };
 }
 
-function normalizeHomology(raw: RawHomologyResponse, sourceId: string): HomologyEntry[] {
+function normalizeHomology(raw: RawHomologyResponse, sourceId: string): HomologyResult {
   const dataEntry = raw.data?.find((d) => d.id === sourceId) ?? raw.data?.[0];
-  if (!dataEntry?.homologies) return [];
-  return dataEntry.homologies.map((h) => ({
+  const homologs: HomologyEntry[] = (dataEntry?.homologies ?? []).map((h) => ({
     targetId: h.target?.id ?? h.id,
     ...(h.target?.species
       ? { targetSpecies: h.target.species }
@@ -158,6 +158,12 @@ function normalizeHomology(raw: RawHomologyResponse, sourceId: string): Homology
     }),
     ...(h.taxonomy_level && { taxonomyLevel: h.taxonomy_level }),
   }));
+  // dataEntry.id is the Ensembl stable gene ID the query resolved to — surface it
+  // so symbol-mode callers get a chainable stable ID, not the echoed symbol.
+  return {
+    homologs,
+    ...(dataEntry?.id && { resolvedQueryId: dataEntry.id }),
+  };
 }
 
 function normalizeXref(raw: RawXrefEntry): XrefEntry {
@@ -437,7 +443,7 @@ export class EnsemblService {
     type: string,
     targetSpecies: string | undefined,
     ctx: Context,
-  ): Promise<HomologyEntry[]> {
+  ): Promise<HomologyResult> {
     let path = `/homology/symbol/${encodeURIComponent(species)}/${encodeURIComponent(symbol)}?type=${encodeURIComponent(type)}`;
     if (targetSpecies) path += `&target_species=${encodeURIComponent(targetSpecies)}`;
     const raw = await this.fetchWithRetry<RawHomologyResponse>(path, ctx);
@@ -450,7 +456,7 @@ export class EnsemblService {
     type: string,
     targetSpecies: string | undefined,
     ctx: Context,
-  ): Promise<HomologyEntry[]> {
+  ): Promise<HomologyResult> {
     let path = `/homology/id/${encodeURIComponent(species)}/${encodeURIComponent(id)}?type=${encodeURIComponent(type)}`;
     if (targetSpecies) path += `&target_species=${encodeURIComponent(targetSpecies)}`;
     const raw = await this.fetchWithRetry<RawHomologyResponse>(path, ctx);
