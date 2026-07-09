@@ -75,7 +75,17 @@ const ColocatedVariantSchema = z.object({
   pubmed: z
     .array(z.number().describe('A PubMed ID for literature citing this variant.'))
     .optional()
-    .describe('PubMed IDs for literature associated with this variant.'),
+    .describe(
+      'PubMed IDs for literature associated with this variant, capped to ' +
+        'max_pubmed_ids_per_variant. pubmedTotal reports the full count when the list was capped.',
+    ),
+  pubmedTotal: z
+    .number()
+    .optional()
+    .describe(
+      'Total PubMed IDs available for this variant before the max_pubmed_ids_per_variant cap. ' +
+        'Equals the returned pubmed length when the list was not capped.',
+    ),
 });
 
 const VepResultSchema = z.object({
@@ -98,8 +108,16 @@ const VepResultSchema = z.object({
       ),
     )
     .describe(
-      'Per-transcript consequence details. High-impact variants may affect many transcripts; ' +
-        'focus on canonical transcripts (isCanonical from ensembl_lookup_gene) for primary effect.',
+      'Per-transcript consequence details, capped to max_transcript_consequences. High-impact ' +
+        'variants may affect many transcripts; focus on canonical transcripts (isCanonical from ' +
+        'ensembl_lookup_gene) for primary effect. transcriptConsequencesTotal reports the full count.',
+    ),
+  transcriptConsequencesTotal: z
+    .number()
+    .optional()
+    .describe(
+      'Total transcript consequences available before the max_transcript_consequences cap. ' +
+        'Equals the returned transcriptConsequences length when not capped.',
     ),
   colocatedVariants: z
     .array(
@@ -123,7 +141,11 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
     'impact level (HIGH/MODERATE/LOW/MODIFIER), and any colocated known variants with clinical significance. ' +
     'HGVS input: provide the full notation including transcript version for best results. ' +
     'Region+allele input: Ensembl normalizes chromosome names and canonical vertebrate output omits the chr ' +
-    'prefix (a chr-prefixed name is also accepted).',
+    'prefix (a chr-prefixed name is also accepted). ' +
+    'By default the response caps transcript consequences (max_transcript_consequences) and per-variant ' +
+    'PubMed IDs (max_pubmed_ids_per_variant) to keep large VEP results compact — well-studied variants ' +
+    'like rs334 otherwise carry 60+ consequences and 100+ citations. Truthful totals are always reported; ' +
+    'set a cap to 0 (or include_all_colocated_pubmed=true) to retrieve the full set.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     variant: z
@@ -146,6 +168,35 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
           'For non-human variants, set the appropriate species ' +
           '(e.g. mus_musculus for mouse). Use ensembl_list_species to discover valid values.',
       ),
+    max_transcript_consequences: z
+      .number()
+      .int()
+      .min(0)
+      .default(10)
+      .describe(
+        'Maximum transcript consequences to return per VEP record. High-impact variants can affect ' +
+          '60+ transcripts; the default keeps the response focused on the top consequences. ' +
+          'Set to 0 to return every transcript consequence uncapped. ' +
+          'transcriptConsequencesTotal on each record always reports the true pre-cap count.',
+      ),
+    max_pubmed_ids_per_variant: z
+      .number()
+      .int()
+      .min(0)
+      .default(10)
+      .describe(
+        'Maximum PubMed IDs to return per colocated known variant. Well-studied variants (e.g. rs334) ' +
+          'cite 100+ papers; the default trims each list. Set to 0 to return every PubMed ID uncapped. ' +
+          'pubmedTotal on each colocated variant reports the true pre-cap count. ' +
+          'Ignored when include_all_colocated_pubmed is true.',
+      ),
+    include_all_colocated_pubmed: z
+      .boolean()
+      .default(false)
+      .describe(
+        'When true, return every PubMed ID for each colocated variant, overriding ' +
+          'max_pubmed_ids_per_variant. Default false to keep responses compact.',
+      ),
   }),
   output: z.object({
     results: z
@@ -161,7 +212,19 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
     totalCount: z.number().describe('Number of VEP consequence records returned.'),
   }),
   enrichment: {
-    notice: z.string().optional().describe('Guidance when no results are returned.'),
+    notice: z
+      .string()
+      .optional()
+      .describe('Guidance when no results are returned or when caps omitted detail.'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe('True when transcript consequences were capped at max_transcript_consequences.'),
+    shown: z
+      .number()
+      .optional()
+      .describe('Total transcript consequences returned across all records after the cap.'),
+    cap: z.number().optional().describe('The max_transcript_consequences limit applied.'),
   },
 
   errors: [
@@ -220,10 +283,13 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
             throw ctx.fail(
               'invalid_notation',
               `Invalid region+allele notation "${input.variant}": ${msg}`,
+              { ...ctx.recoveryFor('invalid_notation') },
             );
           }
           if (/not found|outside/i.test(msg)) {
-            throw ctx.fail('not_found', `Variant location not found: ${msg}`);
+            throw ctx.fail('not_found', `Variant location not found: ${msg}`, {
+              ...ctx.recoveryFor('not_found'),
+            });
           }
           throw err;
         });
@@ -234,12 +300,15 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
           const msg = err instanceof Error ? err.message : String(err);
           // A well-formed rsID that dbSNP does not know reports "No variant found with ID …".
           if (/not found|no variant|unknown variant/i.test(msg)) {
-            throw ctx.fail('not_found', `Variant identifier ${input.variant} not found in dbSNP.`);
+            throw ctx.fail('not_found', `Variant identifier ${input.variant} not found in dbSNP.`, {
+              ...ctx.recoveryFor('not_found'),
+            });
           }
           if (/invalid|unrecognized|parse|malformed/i.test(msg)) {
             throw ctx.fail(
               'invalid_notation',
               `Invalid variant identifier "${input.variant}": ${msg}`,
+              { ...ctx.recoveryFor('invalid_notation') },
             );
           }
           throw err;
@@ -250,24 +319,89 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           if (/invalid|unrecognized|parse|malformed|hgvs/i.test(msg)) {
-            throw ctx.fail('invalid_notation', `Invalid HGVS notation "${input.variant}": ${msg}`);
+            throw ctx.fail('invalid_notation', `Invalid HGVS notation "${input.variant}": ${msg}`, {
+              ...ctx.recoveryFor('invalid_notation'),
+            });
           }
           if (/not found/i.test(msg)) {
-            throw ctx.fail('not_found', `Variant ${input.variant} not found.`);
+            throw ctx.fail('not_found', `Variant ${input.variant} not found.`, {
+              ...ctx.recoveryFor('not_found'),
+            });
           }
           throw err;
         });
     }
 
-    if (results.length === 0) {
+    // VEP returns the full consequence + colocated-variant set; cap post-fetch so common
+    // calls stay compact by default while the totals stay truthful. A cap of 0 (or
+    // include_all_colocated_pubmed for the nested PubMed lists) disables it.
+    const capConsequences = input.max_transcript_consequences > 0;
+    const capPubmed = input.max_pubmed_ids_per_variant > 0 && !input.include_all_colocated_pubmed;
+    let consequencesShown = 0;
+    let consequencesTotal = 0;
+    let pubmedCapped = false;
+
+    const shaped = results.map((r) => {
+      consequencesTotal += r.transcriptConsequences.length;
+      const transcriptConsequences = capConsequences
+        ? r.transcriptConsequences.slice(0, input.max_transcript_consequences)
+        : r.transcriptConsequences;
+      consequencesShown += transcriptConsequences.length;
+
+      const colocatedVariants = r.colocatedVariants.map((cv) => {
+        if (!cv.pubmed) return cv;
+        const pubmedTotal = cv.pubmed.length;
+        const pubmed = capPubmed ? cv.pubmed.slice(0, input.max_pubmed_ids_per_variant) : cv.pubmed;
+        if (pubmed.length < pubmedTotal) pubmedCapped = true;
+        return { ...cv, pubmed, pubmedTotal };
+      });
+
+      return {
+        ...r,
+        transcriptConsequences,
+        transcriptConsequencesTotal: r.transcriptConsequences.length,
+        colocatedVariants,
+      };
+    });
+
+    if (shaped.length === 0) {
       ctx.enrich.notice(
         `No VEP results for "${input.variant}". ` +
           'Verify the notation format and that the position falls within an annotated region.',
       );
+    } else {
+      // Both caps can trip on one call (rs334: 66 consequences and 100+ PubMed IDs).
+      // ctx.enrich.notice is last-wins, so compose the omission fragments into ONE string.
+      const fragments: string[] = [];
+      const consequencesOmitted = consequencesTotal - consequencesShown;
+      if (consequencesOmitted > 0) {
+        fragments.push(
+          `showing ${consequencesShown} of ${consequencesTotal} transcript consequences`,
+        );
+      }
+      if (pubmedCapped) {
+        fragments.push(
+          `capped PubMed IDs to ${input.max_pubmed_ids_per_variant} per colocated variant`,
+        );
+      }
+      if (fragments.length > 0) {
+        const guidance =
+          `${fragments.join('; ')}. Raise max_transcript_consequences (0 returns all) ` +
+          'or set include_all_colocated_pubmed=true for the full detail.';
+        if (consequencesOmitted > 0) {
+          ctx.enrich.truncated({
+            shown: consequencesShown,
+            cap: input.max_transcript_consequences,
+            guidance,
+          });
+        } else {
+          ctx.enrich.notice(guidance);
+        }
+      }
     }
-    ctx.enrich.total(results.length);
+    ctx.enrich.total(shaped.length);
 
-    return { results, totalCount: results.length };
+    return { results: shaped, totalCount: shaped.length };
   },
 
   format: (result) => {
@@ -300,14 +434,22 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
             cvLine += ` — ${cv.clinicalSignificance.join(', ')}`;
           }
           if (cv.pubmed?.length) {
-            cvLine += ` | PubMed: ${cv.pubmed.join(', ')}`;
+            const pubmedTotal = cv.pubmedTotal ?? cv.pubmed.length;
+            const pubmedSuffix =
+              pubmedTotal > cv.pubmed.length
+                ? ` (showing ${cv.pubmed.length} of ${pubmedTotal})`
+                : '';
+            cvLine += ` | PubMed: ${cv.pubmed.join(', ')}${pubmedSuffix}`;
           }
           lines.push(cvLine);
         }
       }
 
       if (r.transcriptConsequences.length > 0) {
-        lines.push(`\n**Transcript consequences (${r.transcriptConsequences.length}):**`);
+        const shownTc = r.transcriptConsequences.length;
+        const totalTc = r.transcriptConsequencesTotal ?? shownTc;
+        const tcCount = totalTc > shownTc ? `${shownTc} of ${totalTc}` : `${shownTc}`;
+        lines.push(`\n**Transcript consequences (${tcCount}):**`);
         for (const tc of r.transcriptConsequences) {
           const geneLabel = tc.geneSymbol ?? tc.geneId ?? 'unknown';
           lines.push(`\n#### ${geneLabel} — ${tc.transcriptId ?? 'unknown'}`);

@@ -54,6 +54,22 @@ describe('ensemblTranscriptResource', () => {
     });
   });
 
+  it('surfaces the declared recovery hint on a not_found error (issue #16)', async () => {
+    mockLookupTranscript.mockRejectedValueOnce(
+      new Error('Transcript ENST99999999999 not found in Ensembl'),
+    );
+    const ctx = createMockContext({ errors: ensemblTranscriptResource.errors });
+    const params = ensemblTranscriptResource.params.parse({ id: 'ENST99999999999' });
+    await expect(ensemblTranscriptResource.handler(params, ctx)).rejects.toMatchObject({
+      data: {
+        reason: 'not_found',
+        recovery: {
+          hint: ensemblTranscriptResource.errors!.find((e) => e.reason === 'not_found')!.recovery,
+        },
+      },
+    });
+  });
+
   it('lists example resources', async () => {
     const listing = await ensemblTranscriptResource.list!();
     expect(listing.resources).toBeInstanceOf(Array);

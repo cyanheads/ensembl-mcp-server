@@ -95,7 +95,9 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         if (/not found/i.test(msg)) {
-          throw ctx.fail('not_found', `ID "${input.id}" not found in Ensembl.`);
+          throw ctx.fail('not_found', `ID "${input.id}" not found in Ensembl.`, {
+            ...ctx.recoveryFor('not_found'),
+          });
         }
         throw err;
       });

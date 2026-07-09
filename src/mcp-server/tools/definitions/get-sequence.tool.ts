@@ -141,6 +141,7 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
         throw ctx.fail(
           'missing_species',
           `Region ${input.id} needs a species — set species (e.g. homo_sapiens) or use the species:chr:start-end id form.`,
+          { ...ctx.recoveryFor('missing_species') },
         );
       }
       const seq = await service
@@ -148,7 +149,9 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           if (/not found|invalid|no stable id/i.test(msg)) {
-            throw ctx.fail('not_found', `Region ${input.id} not found: ${msg}`);
+            throw ctx.fail('not_found', `Region ${input.id} not found: ${msg}`, {
+              ...ctx.recoveryFor('not_found'),
+            });
           }
           throw err;
         });
@@ -169,10 +172,13 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
             'type_mismatch',
             `Cannot request type "${input.type}" from a gene ID — use a transcript or protein stable ID instead. ` +
               `Call ensembl_lookup_gene with expand_transcripts=true to get transcript IDs.`,
+            { ...ctx.recoveryFor('type_mismatch') },
           );
         }
         if (/not found|no stable id/i.test(msg)) {
-          throw ctx.fail('not_found', `ID ${input.id} not found in Ensembl.`);
+          throw ctx.fail('not_found', `ID ${input.id} not found in Ensembl.`, {
+            ...ctx.recoveryFor('not_found'),
+          });
         }
         throw err;
       });

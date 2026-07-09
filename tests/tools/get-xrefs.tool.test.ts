@@ -66,6 +66,20 @@ describe('ensemblGetXrefs', () => {
     });
   });
 
+  it('surfaces the declared recovery hint on a not_found error (issue #16)', async () => {
+    mockGetXrefsById.mockRejectedValueOnce(new Error('ID ENSG99999999999 not found in Ensembl'));
+    const ctx = createMockContext({ errors: ensemblGetXrefs.errors });
+    const input = ensemblGetXrefs.input.parse({ id: 'ENSG99999999999' });
+    await expect(ensemblGetXrefs.handler(input, ctx)).rejects.toMatchObject({
+      data: {
+        reason: 'not_found',
+        recovery: {
+          hint: ensemblGetXrefs.errors!.find((e) => e.reason === 'not_found')!.recovery,
+        },
+      },
+    });
+  });
+
   it('returns empty list and total 0 when no cross-references are found', async () => {
     mockGetXrefsById.mockResolvedValueOnce([]);
     const ctx = createMockContext({ errors: ensemblGetXrefs.errors });

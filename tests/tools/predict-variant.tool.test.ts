@@ -3,7 +3,7 @@
  * @module tests/tools/predict-variant.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensemblPredictVariant } from '@/mcp-server/tools/definitions/predict-variant.tool.js';
 import type { VepRecord } from '@/services/ensembl/types.js';
@@ -90,6 +90,31 @@ const rsIdResult: VepRecord = {
     },
   ],
   colocatedVariants: [{ id: 'rs334', alleleString: 'T/A' }],
+};
+
+// High-cardinality record mirroring the rs334 field-test evidence: 66 transcript
+// consequences and one colocated variant carrying 119 PubMed IDs (issue #15).
+const highCardinalityResult: VepRecord = {
+  input: 'rs334',
+  chromosome: '11',
+  start: 5227002,
+  end: 5227002,
+  assemblyName: 'GRCh38',
+  mostSevereConsequence: 'missense_variant',
+  transcriptConsequences: Array.from({ length: 66 }, (_, i) => ({
+    transcriptId: `ENST00000${300000 + i}`,
+    geneId: 'ENSG00000244734',
+    geneSymbol: 'HBB',
+    consequenceTerms: ['missense_variant'],
+    impact: 'MODERATE',
+  })),
+  colocatedVariants: [
+    {
+      id: 'rs334',
+      alleleString: 'T/A',
+      pubmed: Array.from({ length: 119 }, (_, i) => 1000 + i),
+    },
+  ],
 };
 
 describe('ensemblPredictVariant', () => {
@@ -245,5 +270,132 @@ describe('ensemblPredictVariant', () => {
     };
     const blocks = ensemblPredictVariant.format!({ results: [sparseResult], totalCount: 1 });
     expect(blocks[0]!.type).toBe('text');
+  });
+
+  describe('result shaping (issue #15)', () => {
+    it('caps transcript consequences to the default (10) and reports the true total', async () => {
+      mockPredictVariantId.mockResolvedValueOnce([highCardinalityResult]);
+      const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+      const input = ensemblPredictVariant.input.parse({ variant: 'rs334' });
+      const result = await ensemblPredictVariant.handler(input, ctx);
+      expect(result.results[0]!.transcriptConsequences).toHaveLength(10);
+      expect(result.results[0]!.transcriptConsequencesTotal).toBe(66);
+    });
+
+    it('returns every transcript consequence when max_transcript_consequences is 0', async () => {
+      mockPredictVariantId.mockResolvedValueOnce([highCardinalityResult]);
+      const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+      const input = ensemblPredictVariant.input.parse({
+        variant: 'rs334',
+        max_transcript_consequences: 0,
+      });
+      const result = await ensemblPredictVariant.handler(input, ctx);
+      expect(result.results[0]!.transcriptConsequences).toHaveLength(66);
+      expect(result.results[0]!.transcriptConsequencesTotal).toBe(66);
+    });
+
+    it('caps colocated PubMed IDs to the default (10) and reports the true pubmedTotal', async () => {
+      mockPredictVariantId.mockResolvedValueOnce([highCardinalityResult]);
+      const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+      const input = ensemblPredictVariant.input.parse({ variant: 'rs334' });
+      const result = await ensemblPredictVariant.handler(input, ctx);
+      const cv = result.results[0]!.colocatedVariants[0]!;
+      expect(cv.pubmed).toHaveLength(10);
+      expect(cv.pubmedTotal).toBe(119);
+    });
+
+    it('returns every PubMed ID when include_all_colocated_pubmed is true', async () => {
+      mockPredictVariantId.mockResolvedValueOnce([highCardinalityResult]);
+      const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+      const input = ensemblPredictVariant.input.parse({
+        variant: 'rs334',
+        include_all_colocated_pubmed: true,
+      });
+      const result = await ensemblPredictVariant.handler(input, ctx);
+      expect(result.results[0]!.colocatedVariants[0]!.pubmed).toHaveLength(119);
+    });
+
+    it('returns every PubMed ID when max_pubmed_ids_per_variant is 0', async () => {
+      mockPredictVariantId.mockResolvedValueOnce([highCardinalityResult]);
+      const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+      const input = ensemblPredictVariant.input.parse({
+        variant: 'rs334',
+        max_pubmed_ids_per_variant: 0,
+      });
+      const result = await ensemblPredictVariant.handler(input, ctx);
+      expect(result.results[0]!.colocatedVariants[0]!.pubmed).toHaveLength(119);
+    });
+
+    it('composes both cap disclosures into a single notice when both trip', async () => {
+      mockPredictVariantId.mockResolvedValueOnce([highCardinalityResult]);
+      const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+      const input = ensemblPredictVariant.input.parse({ variant: 'rs334' });
+      await ensemblPredictVariant.handler(input, ctx);
+      const { notice, truncated, shown, cap } = getEnrichment(ctx) as {
+        notice?: string;
+        truncated?: boolean;
+        shown?: number;
+        cap?: number;
+      };
+      // One notice carries both fragments (ctx.enrich.notice is last-wins).
+      expect(notice).toContain('10 of 66 transcript consequences');
+      expect(notice).toContain('capped PubMed IDs to 10');
+      expect(truncated).toBe(true);
+      expect(shown).toBe(10);
+      expect(cap).toBe(10);
+    });
+
+    it('emits no truncation notice when nothing is capped', async () => {
+      mockPredictVariantHgvs.mockResolvedValueOnce([missenseResult]);
+      const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+      const input = ensemblPredictVariant.input.parse({ variant: 'ENST00000380152.8:c.2T>A' });
+      await ensemblPredictVariant.handler(input, ctx);
+      const { truncated, notice } = getEnrichment(ctx) as {
+        truncated?: boolean;
+        notice?: string;
+      };
+      expect(truncated).toBeUndefined();
+      expect(notice).toBeUndefined();
+    });
+
+    it('renders shown-of-total counts in the text output', () => {
+      const output = {
+        results: [
+          {
+            ...highCardinalityResult,
+            transcriptConsequences: highCardinalityResult.transcriptConsequences.slice(0, 10),
+            transcriptConsequencesTotal: 66,
+            colocatedVariants: [
+              {
+                ...highCardinalityResult.colocatedVariants[0]!,
+                pubmed: highCardinalityResult.colocatedVariants[0]!.pubmed!.slice(0, 10),
+                pubmedTotal: 119,
+              },
+            ],
+          },
+        ],
+        totalCount: 1,
+      };
+      const text = (ensemblPredictVariant.format!(output)[0] as { type: 'text'; text: string })
+        .text;
+      expect(text).toContain('Transcript consequences (10 of 66)');
+      expect(text).toContain('showing 10 of 119');
+    });
+  });
+
+  it('surfaces the declared recovery hint on a not_found error (issue #16)', async () => {
+    mockPredictVariantId.mockRejectedValueOnce(
+      new Error("No variant found with ID 'rs99999999999'"),
+    );
+    const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
+    const input = ensemblPredictVariant.input.parse({ variant: 'rs99999999999' });
+    await expect(ensemblPredictVariant.handler(input, ctx)).rejects.toMatchObject({
+      data: {
+        reason: 'not_found',
+        recovery: {
+          hint: ensemblPredictVariant.errors!.find((e) => e.reason === 'not_found')!.recovery,
+        },
+      },
+    });
   });
 });

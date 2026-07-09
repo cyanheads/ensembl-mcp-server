@@ -116,6 +116,23 @@ describe('ensemblQueryRegion', () => {
     });
   });
 
+  it('surfaces the declared recovery hint on an invalid_region error (issue #16)', async () => {
+    mockQueryRegion.mockRejectedValueOnce(new Error('invalid region coordinate parse error'));
+    const ctx = createMockContext({ errors: ensemblQueryRegion.errors });
+    const input = ensemblQueryRegion.input.parse({
+      species: 'homo_sapiens',
+      region: 'bad:region:format',
+    });
+    await expect(ensemblQueryRegion.handler(input, ctx)).rejects.toMatchObject({
+      data: {
+        reason: 'invalid_region',
+        recovery: {
+          hint: ensemblQueryRegion.errors!.find((e) => e.reason === 'invalid_region')!.recovery,
+        },
+      },
+    });
+  });
+
   it('returns empty features array and total 0 for empty results', async () => {
     mockQueryRegion.mockResolvedValueOnce([]);
     const ctx = createMockContext({ errors: ensemblQueryRegion.errors });

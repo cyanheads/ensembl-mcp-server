@@ -42,7 +42,9 @@ export const ensemblGeneResource = resource('ensembl://gene/{id}', {
     const gene = await service.lookupGeneById(params.id, true, ctx).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       if (/not found/i.test(msg)) {
-        throw ctx.fail('not_found', `Gene ${params.id} not found in Ensembl.`);
+        throw ctx.fail('not_found', `Gene ${params.id} not found in Ensembl.`, {
+          ...ctx.recoveryFor('not_found'),
+        });
       }
       throw err;
     });

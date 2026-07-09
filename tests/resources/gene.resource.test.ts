@@ -72,6 +72,22 @@ describe('ensemblGeneResource', () => {
     });
   });
 
+  it('surfaces the declared recovery hint on a not_found error (issue #16)', async () => {
+    mockLookupGeneById.mockRejectedValueOnce(
+      new Error('Gene ENSG99999999999 not found in Ensembl'),
+    );
+    const ctx = createMockContext({ errors: ensemblGeneResource.errors });
+    const params = ensemblGeneResource.params.parse({ id: 'ENSG99999999999' });
+    await expect(ensemblGeneResource.handler(params, ctx)).rejects.toMatchObject({
+      data: {
+        reason: 'not_found',
+        recovery: {
+          hint: ensemblGeneResource.errors!.find((e) => e.reason === 'not_found')!.recovery,
+        },
+      },
+    });
+  });
+
   it('lists example resources', async () => {
     const listing = await ensemblGeneResource.list!();
     expect(listing.resources).toBeInstanceOf(Array);

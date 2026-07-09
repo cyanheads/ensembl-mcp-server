@@ -3,7 +3,7 @@
  * @module tests/tools/get-homology.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { ensemblGetHomology } from '@/mcp-server/tools/definitions/get-homology.tool.js';
 import type { HomologyEntry } from '@/services/ensembl/types.js';
@@ -38,6 +38,16 @@ const ratOrtholog: HomologyEntry = {
 
 const BRCA2_ID = 'ENSG00000139618';
 const TP53_ID = 'ENSG00000141510';
+
+// 174 homologs, mirroring the BRCA2-orthologues field-test evidence (issue #15).
+const manyHomologs: HomologyEntry[] = Array.from({ length: 174 }, (_, i) => ({
+  targetId: `ENSORG${String(i).padStart(11, '0')}`,
+  targetSpecies: `species_${i}`,
+  type: 'ortholog_one2one',
+  percId: 90,
+  percPos: 92,
+  taxonomyLevel: 'Vertebrata',
+}));
 
 describe('ensemblGetHomology', () => {
   it('finds orthologs by gene symbol and returns the resolved stable ID as queryId', async () => {
@@ -220,5 +230,92 @@ describe('ensemblGetHomology', () => {
     const text = (blocks[0] as { type: 'text'; text: string }).text;
     expect(text).toContain('ENSORG00000001234');
     expect(text).not.toContain('undefined');
+  });
+
+  describe('result shaping (issue #15)', () => {
+    it('caps homologs to the default (25) but keeps totalCount at the true available count', async () => {
+      mockGetHomologyBySymbol.mockResolvedValueOnce({
+        homologs: manyHomologs,
+        resolvedQueryId: BRCA2_ID,
+      });
+      const ctx = createMockContext({ errors: ensemblGetHomology.errors });
+      const input = ensemblGetHomology.input.parse({ symbol: 'BRCA2', species: 'homo_sapiens' });
+      const result = await ensemblGetHomology.handler(input, ctx);
+      expect(result.homologs).toHaveLength(25);
+      // totalCount reports the full available count, not the capped page length.
+      expect(result.totalCount).toBe(174);
+    });
+
+    it('returns every homolog when max_results is 0', async () => {
+      mockGetHomologyBySymbol.mockResolvedValueOnce({
+        homologs: manyHomologs,
+        resolvedQueryId: BRCA2_ID,
+      });
+      const ctx = createMockContext({ errors: ensemblGetHomology.errors });
+      const input = ensemblGetHomology.input.parse({ symbol: 'BRCA2', max_results: 0 });
+      const result = await ensemblGetHomology.handler(input, ctx);
+      expect(result.homologs).toHaveLength(174);
+      expect(result.totalCount).toBe(174);
+    });
+
+    it('emits a truncation notice reporting shown-of-total when capped', async () => {
+      mockGetHomologyBySymbol.mockResolvedValueOnce({
+        homologs: manyHomologs,
+        resolvedQueryId: BRCA2_ID,
+      });
+      const ctx = createMockContext({ errors: ensemblGetHomology.errors });
+      const input = ensemblGetHomology.input.parse({ symbol: 'BRCA2' });
+      await ensemblGetHomology.handler(input, ctx);
+      const { notice, truncated, shown, cap } = getEnrichment(ctx) as {
+        notice?: string;
+        truncated?: boolean;
+        shown?: number;
+        cap?: number;
+      };
+      expect(notice).toContain('25 of 174 homologs');
+      expect(truncated).toBe(true);
+      expect(shown).toBe(25);
+      expect(cap).toBe(25);
+    });
+
+    it('does not truncate when the available set is within max_results', async () => {
+      mockGetHomologyBySymbol.mockResolvedValueOnce({
+        homologs: [mouseOrtholog, ratOrtholog],
+        resolvedQueryId: BRCA2_ID,
+      });
+      const ctx = createMockContext({ errors: ensemblGetHomology.errors });
+      const input = ensemblGetHomology.input.parse({ symbol: 'BRCA2' });
+      const result = await ensemblGetHomology.handler(input, ctx);
+      expect(result.homologs).toHaveLength(2);
+      expect(result.totalCount).toBe(2);
+      const { truncated } = getEnrichment(ctx) as { truncated?: boolean };
+      expect(truncated).toBeUndefined();
+    });
+
+    it('renders shown-of-total in the text output when capped', () => {
+      const output = {
+        homologs: manyHomologs.slice(0, 25),
+        totalCount: 174,
+        queryId: BRCA2_ID,
+        querySpecies: 'homo_sapiens',
+        queryType: 'orthologues',
+      };
+      const text = (ensemblGetHomology.format!(output)[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('25 of 174');
+    });
+  });
+
+  it('surfaces the declared recovery hint on a not_found error (issue #16)', async () => {
+    mockGetHomologyBySymbol.mockRejectedValueOnce(new Error('Gene not found in Ensembl'));
+    const ctx = createMockContext({ errors: ensemblGetHomology.errors });
+    const input = ensemblGetHomology.input.parse({ symbol: 'FAKEGENE' });
+    await expect(ensemblGetHomology.handler(input, ctx)).rejects.toMatchObject({
+      data: {
+        reason: 'not_found',
+        recovery: {
+          hint: ensemblGetHomology.errors!.find((e) => e.reason === 'not_found')!.recovery,
+        },
+      },
+    });
   });
 });

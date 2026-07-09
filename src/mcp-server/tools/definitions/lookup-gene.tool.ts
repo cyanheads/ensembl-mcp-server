@@ -193,7 +193,9 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       input.symbols?.length,
     ].filter(Boolean).length;
     if (inputCount > 1) {
-      throw ctx.fail('conflicting_input', 'Provide exactly one of: symbol, id, ids, or symbols.');
+      throw ctx.fail('conflicting_input', 'Provide exactly one of: symbol, id, ids, or symbols.', {
+        ...ctx.recoveryFor('conflicting_input'),
+      });
     }
 
     // --- Batch by IDs ---
@@ -238,10 +240,17 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
             throw ctx.fail(
               'not_found',
               `Gene symbol "${input.symbol}" not found in ${speciesStr}.`,
+              { ...ctx.recoveryFor('not_found') },
             );
           }
           if (/species|invalid|unrecognized/i.test(msg)) {
-            throw ctx.fail('invalid_species', `Species "${speciesStr}" not recognized by Ensembl.`);
+            throw ctx.fail(
+              'invalid_species',
+              `Species "${speciesStr}" not recognized by Ensembl.`,
+              {
+                ...ctx.recoveryFor('invalid_species'),
+              },
+            );
           }
           throw err;
         });
@@ -255,14 +264,18 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           if (/not found|no stable id/i.test(msg)) {
-            throw ctx.fail('not_found', `Gene ID "${input.id}" not found in Ensembl.`);
+            throw ctx.fail('not_found', `Gene ID "${input.id}" not found in Ensembl.`, {
+              ...ctx.recoveryFor('not_found'),
+            });
           }
           throw err;
         });
       return { gene };
     }
 
-    throw ctx.fail('no_input', 'Provide symbol (with species), id, ids, or symbols.');
+    throw ctx.fail('no_input', 'Provide symbol (with species), id, ids, or symbols.', {
+      ...ctx.recoveryFor('no_input'),
+    });
   },
 
   format: (result) => {

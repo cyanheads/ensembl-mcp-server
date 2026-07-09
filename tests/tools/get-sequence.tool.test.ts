@@ -235,6 +235,20 @@ describe('ensemblGetSequence', () => {
     });
   });
 
+  it('surfaces the declared recovery hint on a type_mismatch error (issue #16)', async () => {
+    mockGetSequenceById.mockRejectedValueOnce(new Error('protein type incompatible with gene ID'));
+    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
+    const input = ensemblGetSequence.input.parse({ id: 'ENSG00000139618', type: 'protein' });
+    await expect(ensemblGetSequence.handler(input, ctx)).rejects.toMatchObject({
+      data: {
+        reason: 'type_mismatch',
+        recovery: {
+          hint: ensemblGetSequence.errors!.find((e) => e.reason === 'type_mismatch')!.recovery,
+        },
+      },
+    });
+  });
+
   it('formats short sequence inline without truncation', () => {
     const output = { id: 'ENST00000380152', type: 'protein', seq: 'MPIGSKER', length: 8 };
     const blocks = ensemblGetSequence.format!(output);

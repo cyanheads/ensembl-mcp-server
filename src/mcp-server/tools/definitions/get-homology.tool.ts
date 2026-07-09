@@ -97,6 +97,17 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
           'paralogues: genes related by duplication (within or across species). ' +
           'all: both orthologs and paralogs.',
       ),
+    max_results: z
+      .number()
+      .int()
+      .min(0)
+      .default(25)
+      .describe(
+        'Maximum number of homologs to return. Broad orthology queries ' +
+          '(e.g. BRCA2 across all species) can return 150+ homologs; the default keeps ' +
+          'responses focused. Set to 0 to return every homolog uncapped. ' +
+          'totalCount always reports the true number available before this cap.',
+      ),
   }),
   output: z.object({
     homologs: z
@@ -105,14 +116,31 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
           'A single homologous gene with its stable ID, species, homology type, and sequence identity metrics.',
         ),
       )
-      .describe('Homologous genes found for the query gene.'),
-    totalCount: z.number().describe('Total number of homologs returned.'),
+      .describe(
+        'Homologous genes found for the query gene, capped to max_results. ' +
+          'totalCount reports the full count available before the cap.',
+      ),
+    totalCount: z
+      .number()
+      .describe(
+        'Total number of homologs available before the max_results cap. ' +
+          'Exceeds the returned homologs count when the list was capped.',
+      ),
     queryId: z.string().describe('The resolved Ensembl gene ID used for the homology query.'),
     querySpecies: z.string().describe('The source species used for the query.'),
     queryType: z.string().describe('The homology type queried (orthologues, paralogues, or all).'),
   }),
   enrichment: {
-    notice: z.string().optional().describe('Guidance when no homologs are found.'),
+    notice: z
+      .string()
+      .optional()
+      .describe('Guidance when no homologs are found or the list was capped.'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe('True when the homolog list was capped at max_results.'),
+    shown: z.number().optional().describe('Number of homologs returned after the max_results cap.'),
+    cap: z.number().optional().describe('The max_results limit applied to the homolog list.'),
   },
 
   errors: [
@@ -150,12 +178,15 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     const service = getEnsemblService();
 
     if (!input.symbol?.trim() && !input.id?.trim()) {
-      throw ctx.fail('no_input', 'Provide either symbol (with species) or a stable gene ID.');
+      throw ctx.fail('no_input', 'Provide either symbol (with species) or a stable gene ID.', {
+        ...ctx.recoveryFor('no_input'),
+      });
     }
     if (input.id?.trim() && input.symbol?.trim()) {
       throw ctx.fail(
         'conflicting_input',
         'Provide either symbol or id, not both — they may resolve to different genes.',
+        { ...ctx.recoveryFor('conflicting_input') },
       );
     }
 
@@ -170,7 +201,9 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           if (/not found|no valid lookup|page not found/i.test(msg)) {
-            throw ctx.fail('not_found', `Gene ID "${idTrimmed}" not found in Ensembl.`);
+            throw ctx.fail('not_found', `Gene ID "${idTrimmed}" not found in Ensembl.`, {
+              ...ctx.recoveryFor('not_found'),
+            });
           }
           throw err;
         });
@@ -188,6 +221,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
             throw ctx.fail(
               'not_found',
               `Gene symbol "${submittedSymbol}" not found in ${input.species}.`,
+              { ...ctx.recoveryFor('not_found') },
             );
           }
           throw err;
@@ -198,18 +232,31 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       queryId = result.resolvedQueryId ?? submittedSymbol;
     }
 
-    if (homologs.length === 0) {
+    // Ensembl returns the full homolog set; cap post-fetch so broad orthology
+    // queries stay compact by default. totalCount stays the true available count
+    // so a caller is never misled about completeness (max_results = 0 disables).
+    const availableCount = homologs.length;
+    const returned = input.max_results > 0 ? homologs.slice(0, input.max_results) : homologs;
+
+    if (returned.length === 0) {
       ctx.enrich.notice(
         `No ${input.type} found for "${queryId}" in ${input.species}` +
           (input.target_species ? ` targeting ${input.target_species}` : '') +
           '. Try type=all or remove the target_species filter.',
       );
+    } else if (returned.length < availableCount) {
+      ctx.enrich.truncated({
+        shown: returned.length,
+        cap: input.max_results,
+        guidance:
+          `Showing ${returned.length} of ${availableCount} homologs. ` +
+          'Raise max_results (0 returns all) or set target_species to narrow to one species.',
+      });
     }
-    ctx.enrich.total(homologs.length);
 
     return {
-      homologs,
-      totalCount: homologs.length,
+      homologs: returned,
+      totalCount: availableCount,
       queryId,
       querySpecies: input.species,
       queryType: input.type,
@@ -219,7 +266,10 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
   format: (result) => {
     const lines: string[] = [];
     lines.push(`## Homologs of ${result.queryId} (${result.querySpecies})`);
-    lines.push(`**Type:** ${result.queryType} | **Found:** ${result.totalCount}\n`);
+    const shown = result.homologs.length;
+    const foundLabel =
+      result.totalCount > shown ? `${shown} of ${result.totalCount}` : `${result.totalCount}`;
+    lines.push(`**Type:** ${result.queryType} | **Found:** ${foundLabel}\n`);
 
     if (result.homologs.length === 0) {
       lines.push('No homologs found. Try type=all or remove the target_species filter.');
