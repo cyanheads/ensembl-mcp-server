@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.1](changelog/0.4.x/0.4.1.md) — 2026-07-09
+
+ensembl_get_sequence forwards expand_5prime/expand_3prime to stable-ID genomic lookups and accepts a bare chr:start-end region when species is set; mcp-ts-core 0.10.10 → 0.10.14 with a Bun supply-chain guard and Dockerfile hardening
+
 ## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-07-03
 
 ensembl_predict_variant accepts dbSNP rsIDs via a new VEP /id endpoint; ensembl_query_region exon rows carry parentId/rank; chromosome-name docs corrected; gene-dossier prompt's variant workflow now attributes impact to VEP
