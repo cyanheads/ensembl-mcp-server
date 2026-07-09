@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.2](changelog/0.4.x/0.4.2.md) — 2026-07-09
+
+ensembl_predict_variant and ensembl_get_homology cap high-cardinality output (transcript consequences, PubMed IDs, homologs) by default with truthful totals and an uncap escape hatch; every declared ctx.fail site now surfaces a recovery hint
+
 ## [0.4.1](changelog/0.4.x/0.4.1.md) — 2026-07-09
 
 ensembl_get_sequence forwards expand_5prime/expand_3prime to stable-ID genomic lookups and accepts a bare chr:start-end region when species is set; mcp-ts-core 0.10.10 → 0.10.14 with a Bun supply-chain guard and Dockerfile hardening
