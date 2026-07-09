@@ -376,8 +376,21 @@ export class EnsemblService {
 
   // --- Sequence ---
 
-  async getSequenceById(id: string, type: string, ctx: Context): Promise<SequenceRecord> {
-    const path = `/sequence/id/${encodeURIComponent(id)}?type=${encodeURIComponent(type)}`;
+  async getSequenceById(
+    id: string,
+    type: string,
+    expand5prime: number,
+    expand3prime: number,
+    ctx: Context,
+  ): Promise<SequenceRecord> {
+    const params = [`type=${encodeURIComponent(type)}`];
+    // Ensembl only honors expansion when type=genomic; it is meaningless for
+    // cdna/cds/protein, so gate the params to avoid sending them where the API ignores them.
+    if (type === 'genomic') {
+      if (expand5prime > 0) params.push(`expand_5prime=${expand5prime}`);
+      if (expand3prime > 0) params.push(`expand_3prime=${expand3prime}`);
+    }
+    const path = `/sequence/id/${encodeURIComponent(id)}?${params.join('&')}`;
     const raw = await this.fetchWithRetry<RawSequenceRecord>(path, ctx);
     return normalizeSequence(raw, type);
   }

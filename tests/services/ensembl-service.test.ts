@@ -165,4 +165,64 @@ describe('EnsemblService', () => {
       expect(records[0]?.transcriptConsequences[0]?.impact).toBe('MODERATE');
     });
   });
+
+  describe('getSequenceById expand params (issue #13)', () => {
+    const seqBody = { id: 'ENSG00000139618', seq: 'ACGTACGT', molecule: 'dna' };
+
+    it('appends expand_5prime/expand_3prime for genomic stable-ID lookups', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(seqBody));
+      const ctx = createMockContext();
+      await getEnsemblService().getSequenceById('ENSG00000139618', 'genomic', 10, 10, ctx);
+
+      const url = mockFetch.mock.calls[0]?.[0] as string;
+      expect(url).toContain('/sequence/id/ENSG00000139618');
+      expect(url).toContain('type=genomic');
+      expect(url).toContain('expand_5prime=10');
+      expect(url).toContain('expand_3prime=10');
+    });
+
+    it('omits expand params when both are zero', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(seqBody));
+      const ctx = createMockContext();
+      await getEnsemblService().getSequenceById('ENSG00000139618', 'genomic', 0, 0, ctx);
+
+      const url = mockFetch.mock.calls[0]?.[0] as string;
+      expect(url).toContain('type=genomic');
+      expect(url).not.toContain('expand_5prime');
+      expect(url).not.toContain('expand_3prime');
+    });
+
+    it('does not append expand params for non-genomic types', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'ENST00000380152', seq: 'MPEEK' }));
+      const ctx = createMockContext();
+      await getEnsemblService().getSequenceById('ENST00000380152', 'protein', 10, 10, ctx);
+
+      const url = mockFetch.mock.calls[0]?.[0] as string;
+      expect(url).toContain('type=protein');
+      expect(url).not.toContain('expand_5prime');
+      expect(url).not.toContain('expand_3prime');
+    });
+  });
+
+  describe('getSequenceByRegion (issue #14)', () => {
+    it('builds a /sequence/region/ URL and honors expand params', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ id: 'chromosome:GRCh38:13', seq: 'ACGTACGT' }),
+      );
+      const ctx = createMockContext();
+      await getEnsemblService().getSequenceByRegion(
+        'homo_sapiens',
+        '13:32315086-32315100',
+        10,
+        10,
+        ctx,
+      );
+
+      // The colon in the region is percent-encoded on the wire; decode to assert the path shape.
+      const url = decodeURIComponent(mockFetch.mock.calls[0]?.[0] as string);
+      expect(url).toContain('/sequence/region/homo_sapiens/13:32315086-32315100');
+      expect(url).toContain('expand_5prime=10');
+      expect(url).toContain('expand_3prime=10');
+    });
+  });
 });

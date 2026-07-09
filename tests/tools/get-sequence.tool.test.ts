@@ -4,7 +4,7 @@
  */
 
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensemblGetSequence } from '@/mcp-server/tools/definitions/get-sequence.tool.js';
 import type { SequenceRecord } from '@/services/ensembl/types.js';
 
@@ -34,6 +34,11 @@ const mockProteinSeq: SequenceRecord = {
 };
 
 describe('ensemblGetSequence', () => {
+  beforeEach(() => {
+    mockGetSequenceById.mockReset();
+    mockGetSequenceByRegion.mockReset();
+  });
+
   it('fetches genomic sequence by stable ID', async () => {
     mockGetSequenceById.mockResolvedValueOnce(mockSequence);
     const ctx = createMockContext({ errors: ensemblGetSequence.errors });
@@ -107,6 +112,95 @@ describe('ensemblGetSequence', () => {
       ctx,
     );
     expect(result).toBeDefined();
+  });
+
+  it('forwards expand params to getSequenceById for genomic stable-ID lookups (issue #13)', async () => {
+    mockGetSequenceById.mockResolvedValueOnce(mockSequence);
+    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
+    const input = ensemblGetSequence.input.parse({
+      id: 'ENSG00000139618',
+      type: 'genomic',
+      expand_5prime: 10,
+      expand_3prime: 10,
+    });
+    await ensemblGetSequence.handler(input, ctx);
+    expect(mockGetSequenceById).toHaveBeenCalledWith('ENSG00000139618', 'genomic', 10, 10, ctx);
+    expect(mockGetSequenceByRegion).not.toHaveBeenCalled();
+  });
+
+  it('routes a bare chr:start-end region to getSequenceByRegion when species is set (issue #14)', async () => {
+    const regionSeq = { ...mockSequence, id: '13:32315086-32315100' };
+    mockGetSequenceByRegion.mockResolvedValueOnce(regionSeq);
+    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
+    const input = ensemblGetSequence.input.parse({
+      id: '13:32315086-32315100',
+      species: 'homo_sapiens',
+      type: 'genomic',
+    });
+    await ensemblGetSequence.handler(input, ctx);
+    expect(mockGetSequenceByRegion).toHaveBeenCalledWith(
+      'homo_sapiens',
+      '13:32315086-32315100',
+      0,
+      0,
+      ctx,
+    );
+    expect(mockGetSequenceById).not.toHaveBeenCalled();
+  });
+
+  it('routes the embedded species:chr:start-end form to getSequenceByRegion (issue #14)', async () => {
+    const regionSeq = { ...mockSequence, id: 'homo_sapiens:13:32315086-32315100' };
+    mockGetSequenceByRegion.mockResolvedValueOnce(regionSeq);
+    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
+    // Species field omitted — the embedded prefix must supply the species.
+    const input = ensemblGetSequence.input.parse({ id: 'homo_sapiens:13:32315086-32315100' });
+    await ensemblGetSequence.handler(input, ctx);
+    expect(mockGetSequenceByRegion).toHaveBeenCalledWith(
+      'homo_sapiens',
+      '13:32315086-32315100',
+      0,
+      0,
+      ctx,
+    );
+  });
+
+  it('honors expand params on a bare region (issue #14)', async () => {
+    const regionSeq = { ...mockSequence, id: '13:32315086-32315100' };
+    mockGetSequenceByRegion.mockResolvedValueOnce(regionSeq);
+    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
+    const input = ensemblGetSequence.input.parse({
+      id: '13:32315086-32315100',
+      species: 'homo_sapiens',
+      expand_5prime: 25,
+      expand_3prime: 30,
+    });
+    await ensemblGetSequence.handler(input, ctx);
+    expect(mockGetSequenceByRegion).toHaveBeenCalledWith(
+      'homo_sapiens',
+      '13:32315086-32315100',
+      25,
+      30,
+      ctx,
+    );
+  });
+
+  it('routes a stable ID to getSequenceById, not region (issue #14)', async () => {
+    mockGetSequenceById.mockResolvedValueOnce(mockSequence);
+    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
+    const input = ensemblGetSequence.input.parse({ id: 'ENSG00000139618' });
+    await ensemblGetSequence.handler(input, ctx);
+    expect(mockGetSequenceById).toHaveBeenCalled();
+    expect(mockGetSequenceByRegion).not.toHaveBeenCalled();
+  });
+
+  it('throws missing_species for a bare region without a species (issue #14)', async () => {
+    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
+    const input = ensemblGetSequence.input.parse({ id: '13:32315086-32315100' });
+    await expect(ensemblGetSequence.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'missing_species' },
+    });
+    expect(mockGetSequenceByRegion).not.toHaveBeenCalled();
+    expect(mockGetSequenceById).not.toHaveBeenCalled();
   });
 
   it('throws type_mismatch when requesting protein from a gene ID', async () => {

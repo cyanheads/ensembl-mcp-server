@@ -16,8 +16,9 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
     'Returns the sequence with its stable ID, molecule type, and character count — large sequences are ' +
     'returned in full but the length is stated so callers can budget context. The type parameter selects ' +
     'which sequence is fetched: genomic (default, includes introns), cdna (spliced transcript), ' +
-    'cds (coding sequence only), protein. For region mode, set id to the format species:chr:start-end ' +
-    '(e.g. homo_sapiens:13:32315086-32400268) and set species. Protein sequences require a transcript or ' +
+    'cds (coding sequence only), protein. For region mode, set id to a region — either ' +
+    'species:chr:start-end (e.g. homo_sapiens:13:32315086-32400268) or a bare chr:start-end with ' +
+    'species set (e.g. id 13:32315086-32400268, species homo_sapiens). Protein sequences require a transcript or ' +
     'protein stable ID (ENST…/ENSP…), not a gene ID — use ensembl_lookup_gene with expand_transcripts=true ' +
     'to get the canonical transcript ID first.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
@@ -25,9 +26,9 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
     id: z
       .string()
       .describe(
-        'Ensembl stable ID (ENSG…, ENST…, ENSP…) or region in the format ' +
-          'species:chr:start-end (e.g. homo_sapiens:13:32315086-32400268) for region mode. ' +
-          'For genomic region queries, species is also required.',
+        'Ensembl stable ID (ENSG…, ENST…, ENSP…) or a genomic region for region mode. ' +
+          'Region accepts species:chr:start-end (e.g. homo_sapiens:13:32315086-32400268) or a bare ' +
+          'chr:start-end (e.g. 13:32315086-32400268) when the species field is set.',
       ),
     type: z
       .enum(SEQUENCE_TYPES)
@@ -44,7 +45,8 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
       .optional()
       .describe(
         'Species in Ensembl internal format (e.g. homo_sapiens). ' +
-          'Required for region mode (when id is a species:chr:start-end string). ' +
+          'Required for a bare chr:start-end region; optional for the species:chr:start-end form ' +
+          '(the embedded species is used when the field is omitted). ' +
           'Optional for stable ID lookups — Ensembl infers species from the ID prefix.',
       ),
     expand_5prime: z
@@ -103,32 +105,46 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
         'Use ensembl_lookup_gene with expand_transcripts=true to find the canonical transcript ID, ' +
         'then request the protein or cds sequence from that transcript ID.',
     },
+    {
+      reason: 'missing_species',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A bare chr:start-end region was given without a species.',
+      recovery:
+        'Set species (e.g. homo_sapiens) alongside the chr:start-end region, ' +
+        'or use the combined species:chr:start-end id form.',
+    },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('Fetching sequence', { id: input.id, type: input.type });
     const service = getEnsemblService();
 
-    // Detect region mode: contains ":" after optional species prefix.
-    // Scaffold/patch names carry dots (e.g. GL000220.1), so the chromosome
-    // segment allows "." in addition to word characters.
-    const regionPattern = /^[a-z_]+:[\w.]+:\d+-\d+$/i;
-    const isRegion = regionPattern.test(input.id);
+    // Region mode accepts two id shapes:
+    //   species:chr:start-end   embedded species (e.g. homo_sapiens:13:32315086-32400268)
+    //   chr:start-end           bare region — the species field supplies the species
+    // Scaffold/patch names carry dots (e.g. GL000220.1), so the chromosome segment
+    // allows "." alongside word characters. Colon count is the discriminant: the two
+    // patterns are mutually exclusive (2 colons vs. 1), and a stable ID (ENSG…, no
+    // colon) matches neither, routing to stable-ID mode below.
+    const isPrefixedRegion = /^[a-z_]+:[\w.]+:\d+-\d+$/i.test(input.id);
+    const isBareRegion = /^[\w.]+:\d+-\d+$/.test(input.id);
 
-    if (isRegion) {
-      // Parse "species:chr:start-end"
-      const parts = input.id.split(':');
-      if (parts.length !== 3) {
+    if (isPrefixedRegion || isBareRegion) {
+      // For the prefixed form the species is the segment before the first colon and
+      // the region is everything after it; the bare form takes its species from the
+      // species field and uses the whole id as the region.
+      const firstColon = input.id.indexOf(':');
+      const species =
+        input.species?.trim() || (isPrefixedRegion ? input.id.slice(0, firstColon) : undefined);
+      const region = isPrefixedRegion ? input.id.slice(firstColon + 1) : input.id;
+      if (!species) {
         throw ctx.fail(
-          'not_found',
-          `Region format should be species:chr:start-end, got: ${input.id}`,
+          'missing_species',
+          `Region ${input.id} needs a species — set species (e.g. homo_sapiens) or use the species:chr:start-end id form.`,
         );
       }
-      const [speciesFromId, chr, range] = parts as [string, string, string];
-      const speciesStr = input.species?.trim() || speciesFromId;
-      const region = `${chr}:${range}`;
       const seq = await service
-        .getSequenceByRegion(speciesStr, region, input.expand_5prime, input.expand_3prime, ctx)
+        .getSequenceByRegion(species, region, input.expand_5prime, input.expand_3prime, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           if (/not found|invalid|no stable id/i.test(msg)) {
@@ -141,7 +157,7 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
 
     // Stable ID mode
     const seq = await service
-      .getSequenceById(input.id.trim(), input.type, ctx)
+      .getSequenceById(input.id.trim(), input.type, input.expand_5prime, input.expand_3prime, ctx)
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         if (
