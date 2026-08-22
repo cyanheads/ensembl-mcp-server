@@ -1,11 +1,9 @@
 # ensembl-mcp-server - Directory Structure
 
-Generated on: 2026-07-09 20:57:25
+Generated on: 2026-08-22 21:04:55
 
 ```text
 ensembl-mcp-server/
-├── .agents/
-├── .claude/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .codex-plugin/
@@ -16,6 +14,9 @@ ensembl-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── CODE_OF_CONDUCT.md
+│   ├── CONTRIBUTING.md
+│   ├── FUNDING.yml
 │   └── SECURITY.md
 ├── .vscode/
 │   ├── extensions.json

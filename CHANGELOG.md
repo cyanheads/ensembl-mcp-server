@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.3](changelog/0.4.x/0.4.3.md) — 2026-08-22
+
+MCP 2026-07-28 and SDK v2 adoption adds strict tool inputs, public cache hints, and an explicit stateless HTTP deployment
+
 ## [0.4.2](changelog/0.4.x/0.4.2.md) — 2026-07-09
 
 ensembl_predict_variant and ensembl_get_homology cap high-cardinality output (transcript consequences, PubMed IDs, homologs) by default with truthful totals and an uncap escape hatch; every declared ctx.fail site now surfaces a recovery hint

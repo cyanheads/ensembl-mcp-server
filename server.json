@@ -1,12 +1,12 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cyanheads/ensembl-mcp-server",
-  "description": "Look up genes, fetch sequences, predict variant consequences, find orthologs and xrefs via Ensembl.",
+  "description": "Look up genes, sequences, variants, homologs, and cross-database xrefs from Ensembl REST.",
   "repository": {
     "url": "https://github.com/cyanheads/ensembl-mcp-server",
     "source": "github"
   },
-  "version": "0.4.2",
+  "version": "0.4.3",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,7 +19,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/ensembl-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "packageArguments": [
         {
           "type": "positional",
@@ -55,7 +55,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/ensembl-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "packageArguments": [
         {
           "type": "positional",
