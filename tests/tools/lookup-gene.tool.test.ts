@@ -101,7 +101,10 @@ describe('ensemblLookupGene', () => {
     expect(result.batch).toBeDefined();
     expect(result.batch!.succeeded).toHaveLength(1);
     expect(result.batch!.failed).toHaveLength(1);
-    expect((result.batch!.failed[0] as { query: string }).query).toBe('ENSG99999999999');
+    expect(result.batch!.failed).toContainEqual({
+      query: 'ENSG99999999999',
+      error: 'ID ENSG99999999999 not found in Ensembl.',
+    });
   });
 
   it('batch lookup by symbols returns succeeded/failed split', async () => {
@@ -115,6 +118,10 @@ describe('ensemblLookupGene', () => {
     expect(result.batch).toBeDefined();
     expect(result.batch!.succeeded).toHaveLength(1);
     expect(result.batch!.failed).toHaveLength(1);
+    expect(result.batch!.failed).toContainEqual({
+      query: 'NONEXISTENT_GENE',
+      error: 'Symbol NONEXISTENT_GENE not found in Ensembl for species homo_sapiens.',
+    });
   });
 
   it('throws not_found when symbol lookup fails with "not found" message', async () => {

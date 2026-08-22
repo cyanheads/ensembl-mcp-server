@@ -11,8 +11,7 @@ const ServerConfigSchema = z.object({
     .string()
     .default('https://rest.ensembl.org')
     .describe(
-      'Ensembl REST API base URL. Override to point at GRCh37 legacy endpoint ' +
-        '(https://grch37.rest.ensembl.org) or a local mirror.',
+      'Ensembl REST API base URL. Override to point at the GRCh37 legacy endpoint (https://grch37.rest.ensembl.org) or a local mirror.',
     ),
 });
 

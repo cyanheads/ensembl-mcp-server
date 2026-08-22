@@ -42,7 +42,7 @@ describe('ensemblGeneResource', () => {
   it('returns gene record with all fields for a valid ID', async () => {
     mockLookupGeneById.mockResolvedValueOnce(brca2);
     const ctx = createMockContext({ errors: ensemblGeneResource.errors });
-    const params = ensemblGeneResource.params.parse({ id: 'ENSG00000139618' });
+    const params = ensemblGeneResource.params!.parse({ id: 'ENSG00000139618' });
     const result = await ensemblGeneResource.handler(params, ctx);
     expect(result).toMatchObject({
       id: 'ENSG00000139618',
@@ -55,7 +55,7 @@ describe('ensemblGeneResource', () => {
   it('requests expanded transcripts (expand=true)', async () => {
     mockLookupGeneById.mockResolvedValueOnce(brca2);
     const ctx = createMockContext({ errors: ensemblGeneResource.errors });
-    const params = ensemblGeneResource.params.parse({ id: 'ENSG00000139618' });
+    const params = ensemblGeneResource.params!.parse({ id: 'ENSG00000139618' });
     await ensemblGeneResource.handler(params, ctx);
     // Resource always fetches with expandTranscripts=true
     expect(mockLookupGeneById).toHaveBeenCalledWith('ENSG00000139618', true, expect.anything());
@@ -66,7 +66,7 @@ describe('ensemblGeneResource', () => {
       new Error('Gene ENSG99999999999 not found in Ensembl'),
     );
     const ctx = createMockContext({ errors: ensemblGeneResource.errors });
-    const params = ensemblGeneResource.params.parse({ id: 'ENSG99999999999' });
+    const params = ensemblGeneResource.params!.parse({ id: 'ENSG99999999999' });
     await expect(ensemblGeneResource.handler(params, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });
@@ -77,7 +77,7 @@ describe('ensemblGeneResource', () => {
       new Error('Gene ENSG99999999999 not found in Ensembl'),
     );
     const ctx = createMockContext({ errors: ensemblGeneResource.errors });
-    const params = ensemblGeneResource.params.parse({ id: 'ENSG99999999999' });
+    const params = ensemblGeneResource.params!.parse({ id: 'ENSG99999999999' });
     await expect(ensemblGeneResource.handler(params, ctx)).rejects.toMatchObject({
       data: {
         reason: 'not_found',
@@ -89,7 +89,9 @@ describe('ensemblGeneResource', () => {
   });
 
   it('lists example resources', async () => {
-    const listing = await ensemblGeneResource.list!();
+    const listing = await ensemblGeneResource.list!(
+      {} as Parameters<NonNullable<typeof ensemblGeneResource.list>>[0],
+    );
     expect(listing.resources).toBeInstanceOf(Array);
     expect(listing.resources.length).toBeGreaterThan(0);
     for (const r of listing.resources) {
@@ -103,7 +105,7 @@ describe('ensemblGeneResource', () => {
     const sparseGene: GeneRecord = { id: 'ENSG00000000001' };
     mockLookupGeneById.mockResolvedValueOnce(sparseGene);
     const ctx = createMockContext({ errors: ensemblGeneResource.errors });
-    const params = ensemblGeneResource.params.parse({ id: 'ENSG00000000001' });
+    const params = ensemblGeneResource.params!.parse({ id: 'ENSG00000000001' });
     const result = await ensemblGeneResource.handler(params, ctx);
     expect((result as GeneRecord).id).toBe('ENSG00000000001');
   });

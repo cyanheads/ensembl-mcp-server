@@ -31,7 +31,7 @@ describe('ensemblSpeciesResource (static, default division)', () => {
   it('returns full species list with totalCount', async () => {
     mockListSpecies.mockResolvedValueOnce([...mockSpecies]);
     const ctx = createMockContext();
-    const params = ensemblSpeciesResource.params.parse({});
+    const params = ensemblSpeciesResource.params!.parse({});
     const result = (await ensemblSpeciesResource.handler(params, ctx)) as SpeciesResult;
     expect(result.species).toHaveLength(60);
     expect(result.totalCount).toBe(60);
@@ -40,7 +40,7 @@ describe('ensemblSpeciesResource (static, default division)', () => {
   it('fetches the default division (no division filter passed to the service)', async () => {
     mockListSpecies.mockResolvedValueOnce([...mockSpecies]);
     const ctx = createMockContext();
-    await ensemblSpeciesResource.handler(ensemblSpeciesResource.params.parse({}), ctx);
+    await ensemblSpeciesResource.handler(ensemblSpeciesResource.params!.parse({}), ctx);
     expect(mockListSpecies).toHaveBeenCalledWith(undefined, expect.anything());
   });
 
@@ -48,7 +48,7 @@ describe('ensemblSpeciesResource (static, default division)', () => {
     mockListSpecies.mockResolvedValueOnce([...mockSpecies]);
     const ctx = createMockContext();
     const result = (await ensemblSpeciesResource.handler(
-      ensemblSpeciesResource.params.parse({}),
+      ensemblSpeciesResource.params!.parse({}),
       ctx,
     )) as SpeciesResult;
     for (let i = 1; i < result.species.length; i++) {
@@ -59,7 +59,9 @@ describe('ensemblSpeciesResource (static, default division)', () => {
   });
 
   it('lists the all-species resource', async () => {
-    const listing = await ensemblSpeciesResource.list!();
+    const listing = await ensemblSpeciesResource.list!(
+      {} as Parameters<NonNullable<typeof ensemblSpeciesResource.list>>[0],
+    );
     expect(listing.resources).toHaveLength(1);
     expect(listing.resources[0]!.uri).toBe('ensembl://species');
     expect(listing.resources[0]!.name).toContain('Species');
@@ -69,7 +71,7 @@ describe('ensemblSpeciesResource (static, default division)', () => {
     mockListSpecies.mockResolvedValueOnce([{ name: 'minimal_organism' }]);
     const ctx = createMockContext();
     const result = (await ensemblSpeciesResource.handler(
-      ensemblSpeciesResource.params.parse({}),
+      ensemblSpeciesResource.params!.parse({}),
       ctx,
     )) as SpeciesResult;
     expect(result.species).toHaveLength(1);
@@ -81,7 +83,7 @@ describe('ensemblSpeciesByDivisionResource (templated by division)', () => {
   it('passes the addressed division through to the service', async () => {
     mockListSpecies.mockResolvedValueOnce([...mockSpecies]);
     const ctx = createMockContext();
-    const params = ensemblSpeciesByDivisionResource.params.parse({ division: 'EnsemblPlants' });
+    const params = ensemblSpeciesByDivisionResource.params!.parse({ division: 'EnsemblPlants' });
     const result = (await ensemblSpeciesByDivisionResource.handler(params, ctx)) as SpeciesResult;
     expect(mockListSpecies).toHaveBeenCalledWith('EnsemblPlants', expect.anything());
     expect(result.totalCount).toBe(60);
@@ -89,12 +91,14 @@ describe('ensemblSpeciesByDivisionResource (templated by division)', () => {
 
   it('rejects an invalid division value', () => {
     expect(() =>
-      ensemblSpeciesByDivisionResource.params.parse({ division: 'EnsemblAliens' }),
+      ensemblSpeciesByDivisionResource.params!.parse({ division: 'EnsemblAliens' }),
     ).toThrow();
   });
 
   it('lists one addressable URI per division', async () => {
-    const listing = await ensemblSpeciesByDivisionResource.list!();
+    const listing = await ensemblSpeciesByDivisionResource.list!(
+      {} as Parameters<NonNullable<typeof ensemblSpeciesByDivisionResource.list>>[0],
+    );
     expect(listing.resources).toHaveLength(5);
     for (const r of listing.resources) {
       expect(r).toHaveProperty('uri');

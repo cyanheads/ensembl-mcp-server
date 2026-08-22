@@ -33,7 +33,7 @@ describe('ensemblTranscriptResource', () => {
   it('returns transcript record for valid ID', async () => {
     mockLookupTranscript.mockResolvedValueOnce(canonicalTranscript);
     const ctx = createMockContext({ errors: ensemblTranscriptResource.errors });
-    const params = ensemblTranscriptResource.params.parse({ id: 'ENST00000380152' });
+    const params = ensemblTranscriptResource.params!.parse({ id: 'ENST00000380152' });
     const result = await ensemblTranscriptResource.handler(params, ctx);
     expect(result).toMatchObject({
       id: 'ENST00000380152',
@@ -48,7 +48,7 @@ describe('ensemblTranscriptResource', () => {
       new Error('Transcript ENST99999999999 not found in Ensembl'),
     );
     const ctx = createMockContext({ errors: ensemblTranscriptResource.errors });
-    const params = ensemblTranscriptResource.params.parse({ id: 'ENST99999999999' });
+    const params = ensemblTranscriptResource.params!.parse({ id: 'ENST99999999999' });
     await expect(ensemblTranscriptResource.handler(params, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });
@@ -59,7 +59,7 @@ describe('ensemblTranscriptResource', () => {
       new Error('Transcript ENST99999999999 not found in Ensembl'),
     );
     const ctx = createMockContext({ errors: ensemblTranscriptResource.errors });
-    const params = ensemblTranscriptResource.params.parse({ id: 'ENST99999999999' });
+    const params = ensemblTranscriptResource.params!.parse({ id: 'ENST99999999999' });
     await expect(ensemblTranscriptResource.handler(params, ctx)).rejects.toMatchObject({
       data: {
         reason: 'not_found',
@@ -71,7 +71,9 @@ describe('ensemblTranscriptResource', () => {
   });
 
   it('lists example resources', async () => {
-    const listing = await ensemblTranscriptResource.list!();
+    const listing = await ensemblTranscriptResource.list!(
+      {} as Parameters<NonNullable<typeof ensemblTranscriptResource.list>>[0],
+    );
     expect(listing.resources).toBeInstanceOf(Array);
     expect(listing.resources.length).toBeGreaterThan(0);
     for (const r of listing.resources) {
@@ -85,7 +87,7 @@ describe('ensemblTranscriptResource', () => {
     const sparse: TranscriptRecord = { id: 'ENST00000000001', isCanonical: false };
     mockLookupTranscript.mockResolvedValueOnce(sparse);
     const ctx = createMockContext({ errors: ensemblTranscriptResource.errors });
-    const params = ensemblTranscriptResource.params.parse({ id: 'ENST00000000001' });
+    const params = ensemblTranscriptResource.params!.parse({ id: 'ENST00000000001' });
     const result = await ensemblTranscriptResource.handler(params, ctx);
     expect((result as TranscriptRecord).id).toBe('ENST00000000001');
     expect((result as TranscriptRecord).isCanonical).toBe(false);

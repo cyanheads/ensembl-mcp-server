@@ -24,6 +24,14 @@ import { initEnsemblService } from './services/ensembl/ensembl-service.js';
 await createApp({
   name: 'ensembl-mcp-server',
   title: 'ensembl-mcp-server',
+  cacheHints: {
+    'prompts/list': { ttlMs: 3_600_000, cacheScope: 'public' },
+    'resources/list': { ttlMs: 3_600_000, cacheScope: 'public' },
+    'resources/read': { ttlMs: 300_000, cacheScope: 'public' },
+    'resources/templates/list': { ttlMs: 3_600_000, cacheScope: 'public' },
+    'server/discover': { ttlMs: 3_600_000, cacheScope: 'public' },
+    'tools/list': { ttlMs: 3_600_000, cacheScope: 'public' },
+  },
   tools: [
     ensemblListSpecies,
     ensemblLookupGene,

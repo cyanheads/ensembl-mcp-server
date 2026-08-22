@@ -297,7 +297,7 @@ export class EnsemblService {
     const operation = `EnsemblService.fetch:${path.split('?')[0]}`;
     const reqCtx = requestContextService.createRequestContext({
       operation,
-      parentContext: { requestId: ctx.requestId },
+      parentContext: ctx,
     });
     return withRetry(() => this.fetchJson<T>(path, ctx, options), {
       operation,
