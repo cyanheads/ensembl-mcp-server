@@ -4,7 +4,7 @@
 # This stage installs all dependencies (including dev), builds the TypeScript
 # source code into JavaScript, and prepares the production assets.
 # ==============================================================================
-FROM oven/bun:1.3.14 AS build
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.0 AS build
 
 WORKDIR /usr/src/app
 
@@ -30,7 +30,7 @@ RUN bun run build
 # application. It uses a slim base image and only includes production
 # dependencies and build artifacts.
 # ==============================================================================
-FROM oven/bun:1.3.14-slim AS production
+FROM oven/bun:1.4.0-slim AS production
 
 WORKDIR /usr/src/app
 
@@ -41,7 +41,7 @@ ENV NODE_ENV=production
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 ARG APP_VERSION
 LABEL org.opencontainers.image.title="@cyanheads/ensembl-mcp-server"
-LABEL org.opencontainers.image.description="Look up genes, fetch sequences, predict variant consequences, find orthologs and cross-database xrefs via Ensembl REST via MCP. STDIO or Streamable HTTP."
+LABEL org.opencontainers.image.description="Look up genes, fetch sequences, predict variant consequences, find orthologs, and retrieve cross-database xrefs from Ensembl REST via MCP. STDIO or Streamable HTTP."
 LABEL org.opencontainers.image.source="https://github.com/cyanheads/ensembl-mcp-server"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.version="${APP_VERSION}"
@@ -52,7 +52,7 @@ COPY package.json bun.lock ./
 # Install only production dependencies, ignoring any lifecycle scripts (like 'prepare')
 # that are not needed in the final production image.
 RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --production --frozen-lockfile --ignore-scripts
+    bun install --production --frozen-lockfile --ignore-scripts --omit=peer
 
 # Conditionally install OpenTelemetry optional peer dependencies (Tier 3).
 # These are not bundled by default to keep the base image lean. Enable at build time
@@ -69,7 +69,8 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
         @opentelemetry/sdk-metrics \
         @opentelemetry/sdk-node \
         @opentelemetry/sdk-trace-node \
-        @opentelemetry/semantic-conventions; \
+        @opentelemetry/semantic-conventions \
+        --omit=dev --omit=peer --ignore-scripts; \
     fi
 
 # Copy the compiled application code from the build stage
