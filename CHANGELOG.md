@@ -4,7 +4,7 @@ All notable changes to this project. Each entry links to its full per-version fi
 
 ## [0.4.4](changelog/0.4.x/0.4.4.md) — 2026-09-19
 
-mcp-ts-core 0.13.6 adoption: an unrecognized or misspelled argument key now succeeds instead of failing, argument rejections carry a reason and recovery hint under Invalid params, and every declared tool/resource error closes with a (reason ...) suffix
+mcp-ts-core 0.13.6 adoption: an unrecognized or misspelled argument key now succeeds instead of failing, argument rejections carry a reason and recovery hint under Invalid params, and every declared tool error closes with a (reason ...) suffix
 
 ## [0.4.3](changelog/0.4.x/0.4.3.md) — 2026-08-22
 
