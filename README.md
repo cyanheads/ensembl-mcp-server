@@ -27,9 +27,11 @@
 
 ---
 
-## Tools
+## Overview
 
-Seven tools covering the core Ensembl REST API surface — species discovery, gene/transcript lookup, sequence retrieval, genomic region overlap, variant consequence prediction, cross-species homology, and external database cross-references:
+Gene, sequence, and variant data for vertebrates and other model organisms from the Ensembl REST API. Look up genes, fetch sequences, predict variant consequences, find orthologs, and cross-reference external databases from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+
+### Tools
 
 | Tool | Description |
 |:-----|:------------|
@@ -41,103 +43,125 @@ Seven tools covering the core Ensembl REST API surface — species discovery, ge
 | `ensembl_get_homology` | Find orthologs and/or paralogs of a gene across species with percent identity and taxonomy level |
 | `ensembl_get_xrefs` | Retrieve cross-database references for a gene — HGNC, UniProt, EntrezGene, OMIM, RefSeq, Reactome, and others |
 
-### `ensembl_list_species`
+### Resources
 
-Discovery tool for the Ensembl species catalog.
+| Resource | Description |
+|:---|:---|
+| `ensembl://gene/{id}` | Gene record by stable ID (`ENSG…`) — location, biotype, description, and transcript list |
+| `ensembl://transcript/{id}` | Transcript record by stable ID (`ENST…`) — parent gene, location, biotype, canonical flag, and length |
+| `ensembl://species` | Supported Ensembl species for the endpoint default division (vertebrates on the default endpoint) |
+| `ensembl://species/{division}` | Supported species in one division (`EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, `EnsemblProtists`) |
 
-- Filter by division: vertebrates, plants, fungi, metazoa, or protists
-- Optional name filter (`nameContains`) for local substring matching
-- Returns display name, common name, assembly, taxon ID, and Ensembl division for each species
-- Required first step — species names like `homo_sapiens` are opaque to non-biologists and are the input format every other tool expects
+All resource data is also reachable via the `ensembl_list_species` tool, which additionally filters by name.
 
----
+### Prompts
 
-### `ensembl_lookup_gene`
+| Prompt | Description |
+|:---|:---|
+| `ensembl_gene_dossier` | Structured workflow for assembling a complete gene profile: symbol → ID + location → sequence → variants → orthologs → xrefs |
 
-Single entry point for resolving gene identity.
+## Capability reference
 
-- Symbol + species lookup (`BRCA2` + `homo_sapiens`) or direct stable ID lookup (`ENSG00000139618`)
-- Batch lookup of up to 20 IDs or symbols in one call via POST endpoints
-- Optional transcript expansion — returns full transcript list with biotype and canonical flag
-- Returns Ensembl stable ID, genomic location (chr:start-end:strand), biotype, description, and transcript list
-- Errors: `not_found` (symbol or ID not in Ensembl), `invalid_species` (call `ensembl_list_species` to discover valid names)
+### `ensembl_list_species` <sub>tool</sub>
 
----
-
-### `ensembl_get_sequence`
-
-Fetch any sequence type for any Ensembl feature.
-
-- Molecule types: `genomic` (default, includes introns), `cdna` (spliced), `cds` (coding only), `protein`
-- Accepts stable IDs or `species:chr:start-end` region format for genomic region mode
-- Optional flanking sequence (`expand_5prime`, `expand_3prime`) in base pairs
-- Returns sequence with stable ID, molecule type, and character count — large sequences (e.g. BRCA2 at 85,183 bp genomic) returned in full with explicit length so callers can budget context usage
+- Filter by division (`EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, `EnsemblProtists`) or `nameContains` for a local substring match against name, display name, and common name
+- Omit `division` to return the endpoint default division (vertebrates, ~356 species on the default GRCh38 endpoint)
+- Returns internal name (the value every other tool expects), display name, common name, taxon ID, assembly, and division
+- Required first step — species names like `homo_sapiens` are opaque to non-biologists
 
 ---
 
-### `ensembl_query_region`
+### `ensembl_lookup_gene` <sub>tool</sub>
 
-Find all genomic features overlapping a chromosomal window.
-
-- Region format: `chr:start-end` (e.g. `13:32315086-32400268`) — no `chr` prefix for vertebrates
-- Feature types: `gene` (default), `transcript`, `variation`, `regulatory`, `exon`
-- Optional biotype filter
-- Defaults to gene only to prevent context overload — a large locus can contain 44,000+ variants when all feature types are selected
+- Exactly one of `symbol` (+ optional `species`, default `homo_sapiens`), `id`, `ids` (batch, up to 20), or `symbols` (batch, up to 20)
+- `expand_transcripts` (default `false`) adds the full transcript list with biotype and canonical flag
+- Batch modes (`ids`/`symbols`) return a `succeeded`/`failed` split with per-item error strings instead of failing the call
+- Errors: `not_found`, `invalid_species`, `no_input`, `conflicting_input`
 
 ---
 
-### `ensembl_predict_variant`
+### `ensembl_get_sequence` <sub>tool</sub>
 
-Predict variant consequences via the Ensembl VEP.
-
-- Accepts HGVS notation (transcript-relative: `ENST00000380152.8:c.2T>A`) or genomic region+allele format (`13:32316462:32316462:1/A`)
-- Returns most severe consequence term, affected transcripts and genes, impact level (HIGH/MODERATE/LOW/MODIFIER)
-- Includes colocated known variants with clinical significance (ClinVar, dbSNP)
-- Errors: `invalid_notation` (check format), `not_found` (location outside any known transcript)
-
----
-
-### `ensembl_get_homology`
-
-Cross-species homolog lookup.
-
-- Returns orthologs (default) or paralogs, or both
-- Optional `target_species` filter to narrow to specific organisms
-- Each homolog carries stable ID, species, relationship type (ortholog_one2one, ortholog_one2many, etc.), `perc_id`, `perc_pos`, and taxonomy level
+- `type`: `genomic` (default, includes introns), `cdna` (spliced), `cds` (coding only), `protein`
+- Accepts a stable ID (`ENSG…`/`ENST…`/`ENSP…`) or a region — `species:chr:start-end`, or bare `chr:start-end` with `species` set
+- `expand_5prime` / `expand_3prime` (default `0`) extend flanking base pairs for genomic and region queries
+- `protein` and `cds` require a transcript or protein ID, not a gene ID
+- Every response states `length` so callers can budget context before consuming large sequences
+- Errors: `not_found`, `type_mismatch`, `missing_species`
 
 ---
 
-### `ensembl_get_xrefs`
+### `ensembl_query_region` <sub>tool</sub>
 
-Full cross-database reference set for any Ensembl feature.
+- `region` in `chr:start-end` format; `feature` array defaults to `["gene"]`, also accepts `transcript`, `variation`, `regulatory`, `exon`; optional `biotype` filter
+- Defaults to genes only — requesting `variation` on a large locus can return 44,000+ features
+- Exon rows carry a `parentId` and `rank`, since one exon is reported once per parent transcript
+- Errors: `invalid_region`, `invalid_species`
 
-- Returns all external IDs by default: HGNC, UniProt, EntrezGene, OMIM, RefSeq, Reactome, and more (56 xrefs for BRCA2)
-- Optional `dbname` filter (e.g. `HGNC`, `Uniprot_gn`, `EntrezGene`, `MIM_GENE`) to narrow output
-- Uses the `xrefs/id` endpoint (not `xrefs/symbol`) — returns the full cross-reference set
-- IDs returned here chain directly to protein, literature, disease, and pathway resources in other MCP servers
+---
 
-## Resources and prompts
+### `ensembl_predict_variant` <sub>tool</sub>
 
-| Type | Name | Description |
-|:-----|:-----|:------------|
-| Resource | `ensembl://gene/{id}` | Gene record by stable ID (`ENSG…`) — location, biotype, description, and transcript list |
-| Resource | `ensembl://transcript/{id}` | Transcript record by stable ID (`ENST…`) — parent gene, location, biotype, canonical flag, and length |
-| Resource | `ensembl://species` | Supported Ensembl species for the endpoint default division (vertebrates on the default endpoint) with name, display name, assembly, taxon ID, and division |
-| Resource | `ensembl://species/{division}` | Supported species in one division (`EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, `EnsemblProtists`) |
-| Prompt | `ensembl_gene_dossier` | Structured workflow for assembling a complete gene profile: symbol → ID + location → sequence → variants → orthologs → xrefs |
+- `variant` accepts HGVS (transcript-relative or genomic), region+allele (`chr:start:end:strand/allele`), or a dbSNP rsID
+- `max_transcript_consequences` (default `10`) and `max_pubmed_ids_per_variant` (default `10`) cap large VEP results; set either to `0` for the full set, or `include_all_colocated_pubmed: true` for uncapped PubMed IDs
+- Returns most severe consequence term, per-transcript impact (HIGH/MODERATE/LOW/MODIFIER), and colocated known variants with clinical significance
+- Totals (`transcriptConsequencesTotal`, `pubmedTotal`) are always reported even when capped
+- Errors: `invalid_notation`, `not_found`
 
-All resource data is also reachable via tools. `ensembl://species` returns the endpoint default division (vertebrates) and `ensembl://species/{division}` returns a named division; `ensembl_list_species` is the tool equivalent, filtering by division and name.
+---
+
+### `ensembl_get_homology` <sub>tool</sub>
+
+- Exactly one of `symbol` (+ `species`, default `homo_sapiens`) or `id`; optional `target_species` filter
+- `type`: `orthologues` (default), `paralogues`, or `all`
+- `max_results` caps the homolog list (default `25`, `0` uncapped); `totalCount` always reports the true count available
+- Errors: `not_found`, `no_input`, `conflicting_input`
+
+---
+
+### `ensembl_get_xrefs` <sub>tool</sub>
+
+- `id` (`ENSG…`/`ENST…`) required; optional `dbname` filter (e.g. `HGNC`, `Uniprot_gn`, `EntrezGene`, `MIM_GENE`, `RefSeq_mRNA`, `Reactome`, `GO`)
+- Uses the `xrefs/id` endpoint, returning the full cross-reference set (56+ entries for well-annotated genes like BRCA2)
+- Errors: `not_found`
+
+---
+
+### `ensembl://gene/{id}` <sub>resource</sub>
+
+- Returns location, biotype, description, and transcript list for a gene stable ID (`ENSG…`); version suffix optional
+- Errors: `not_found`
+
+---
+
+### `ensembl://transcript/{id}` <sub>resource</sub>
+
+- Returns parent gene, location, biotype, canonical flag, and length for a transcript stable ID (`ENST…`); version suffix optional
+- Errors: `not_found`
+
+---
+
+### `ensembl://species` <sub>resource</sub>
+
+- No parameters — returns the endpoint default division (vertebrates, ~356 species on the default GRCh38 endpoint)
+- For a named division, read `ensembl://species/{division}` instead
+
+---
+
+### `ensembl://species/{division}` <sub>resource</sub>
+
+- `division` required: `EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, or `EnsemblProtists`
+
+---
+
+### `ensembl_gene_dossier` <sub>prompt</sub>
+
+- Arguments: `gene_symbol` required; `species` optional (default `homo_sapiens`)
+- Sequences a 7-step workflow: resolve the gene → fetch the protein sequence → find variants in the locus → predict variant consequences → find cross-species orthologs → get external database IDs → synthesize the dossier
 
 ## Features
 
-Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp-ts-core):
-
-- Declarative tool, resource, and prompt definitions — single file per primitive, framework handles registration and validation
-- Unified error handling — handlers throw, framework catches, classifies, and formats
-- Pluggable auth: `none`, `jwt`, `oauth`
-- Swappable storage backends: `in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`
-- Structured logging with optional OpenTelemetry tracing
-- STDIO and Streamable HTTP transports
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
 
 Ensembl-specific:
 
@@ -151,7 +175,7 @@ Agent-friendly output:
 
 - Sequence character count stated on every `ensembl_get_sequence` response so callers can budget context before consuming large genomic sequences
 - `ensembl_list_species` is explicitly the discovery step — tool descriptions call out the opaque internal-name format and direct agents to it before using species-dependent tools
-- Cross-tool chaining made explicit: xref IDs from `ensembl_get_xrefs` are described as inputs for protein and literature servers; the `ensembl_gene_dossier` prompt sequences the full 7-tool research workflow
+- Cross-tool chaining made explicit: xref IDs from `ensembl_get_xrefs` are described as inputs for protein and literature servers; the `ensembl_gene_dossier` prompt sequences all 6 tools into one research workflow
 
 ## Getting started
 
@@ -339,7 +363,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 ## Contributing
 
-Issues and pull requests are welcome. Run checks and tests before submitting:
+Issues are welcome. Run checks and tests before submitting:
 
 ```sh
 bun run devcheck
