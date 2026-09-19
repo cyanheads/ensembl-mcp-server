@@ -24,6 +24,13 @@ import { initEnsemblService } from './services/ensembl/ensembl-service.js';
 await createApp({
   name: 'ensembl-mcp-server',
   title: 'ensembl-mcp-server',
+  /**
+   * Every tool here is a read-only Ensembl REST lookup — no handler calls
+   * `ctx.requestInput`, so nothing needs a session to come back to. `stateless`
+   * is declared in source rather than left to the deployment's
+   * `MCP_SESSION_MODE`, which still wins when it carries a meaningful value.
+   */
+  sessionMode: 'stateless',
   cacheHints: {
     'prompts/list': { ttlMs: 3_600_000, cacheScope: 'public' },
     'resources/list': { ttlMs: 3_600_000, cacheScope: 'public' },
