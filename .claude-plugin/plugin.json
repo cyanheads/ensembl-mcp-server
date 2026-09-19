@@ -1,13 +1,27 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "ensembl-mcp-server",
   "version": "0.4.3",
   "description": "Look up genes, fetch sequences, predict variant consequences, find orthologs, and retrieve cross-database xrefs from Ensembl REST via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "cyanheads"
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
   },
   "homepage": "https://github.com/cyanheads/ensembl-mcp-server#readme",
   "repository": "https://github.com/cyanheads/ensembl-mcp-server",
   "license": "Apache-2.0",
+  "keywords": [
+    "ensembl",
+    "genomics",
+    "bioinformatics",
+    "genes",
+    "sequences",
+    "variants",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol"
+  ],
   "mcpServers": {
     "ensembl-mcp-server": {
       "command": "npx",
