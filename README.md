@@ -83,18 +83,21 @@ All resource data is also reachable via the `ensembl_list_species` tool, which a
 ### `ensembl_get_sequence` <sub>tool</sub>
 
 - `type`: `genomic` (default, includes introns), `cdna` (spliced), `cds` (coding only), `protein`
-- Accepts a stable ID (`ENSG…`/`ENST…`/`ENSP…`) or a region — `species:chr:start-end`, or bare `chr:start-end` with `species` set
+- Accepts a stable ID (`ENSG…`/`ENST…`/`ENSP…`) or a region — `species:chr:start-end`, or bare `chr:start-end` with `species` set; a region spans at most 10,000,000 bases, with start at or below end
 - `expand_5prime` / `expand_3prime` (default `0`) extend flanking base pairs for genomic and region queries
-- `protein` and `cds` require a transcript or protein ID, not a gene ID
-- Every response states `length` so callers can budget context before consuming large sequences
-- Errors: `not_found`, `type_mismatch`, `missing_species`
+- `protein` and `cds` require a transcript or protein ID, not a gene ID; region ids are genomic-only
+- Returns a bounded window: `offset` (0-based, default `0`) and `max_length` (default `10000`, `0` for the rest uncapped) index the resolved sequence, flanks included
+- `length` is always the full sequence length; `truncated` and `nextOffset` say whether more follows and where to resume, so walking `nextOffset` reconstructs the whole sequence
+- Errors: `not_found`, `type_mismatch`, `missing_species`, `invalid_region`
 
 ---
 
 ### `ensembl_query_region` <sub>tool</sub>
 
-- `region` in `chr:start-end` format; `feature` array defaults to `["gene"]`, also accepts `transcript`, `variation`, `regulatory`, `exon`; optional `biotype` filter
-- Defaults to genes only — requesting `variation` on a large locus can return 44,000+ features
+- `region` in `chr:start-end` format, at most 5,000,000 bases; `feature` array (at least one) defaults to `["gene"]`, also accepts `transcript`, `variation`, `regulatory`, `exon`; optional `biotype` filter
+- Defaults to genes only — requesting `variation` on a large locus can match 44,000+ features
+- `max_results` caps the feature list (default `100`, `0` uncapped); `totalCount` always reports the true count found
+- `assemblyName` (e.g. `GRCh38`) names the assembly the coordinates are on
 - Exon rows carry a `parentId` and `rank`, since one exon is reported once per parent transcript
 - Errors: `invalid_region`, `invalid_species`
 
@@ -166,14 +169,14 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 Ensembl-specific:
 
 - Keyless REST API — no API key required; Ensembl REST is fully public at 55,000 req/hr
-- Rate-limit-aware service layer: tracks `x-ratelimit-remaining`, retries 429 with `Retry-After`, and retries transient 5xx
-- Batch POST endpoints used throughout — `POST /lookup/id` (up to 50 IDs) and `POST /lookup/symbol/{species}` reduce N+1 round trips in multi-gene workflows
+- Rate-limit-aware service layer: retries 429 honoring `Retry-After`, and retries transient 5xx and HTML error pages
+- Batch POST endpoints used throughout — `POST /lookup/id` and `POST /lookup/symbol/{species}` (up to 1,000 items each upstream) reduce N+1 round trips in multi-gene workflows
 - GRCh37 legacy support via `ENSEMBL_BASE_URL` — point the entire server at `https://grch37.rest.ensembl.org` for clinical workflows on the older assembly
 - All coordinate-bearing responses echo the assembly name so agents never see a bare genomic position without assembly context
 
 Agent-friendly output:
 
-- Sequence character count stated on every `ensembl_get_sequence` response so callers can budget context before consuming large genomic sequences
+- `ensembl_get_sequence` returns sequences in bounded windows (10,000 characters by default) with the full length and a `nextOffset` to continue, so a long gene or locus never lands in one response unasked
 - `ensembl_list_species` is explicitly the discovery step — tool descriptions call out the opaque internal-name format and direct agents to it before using species-dependent tools
 - Cross-tool chaining made explicit: xref IDs from `ensembl_get_xrefs` are described as inputs for protein and literature servers; the `ensembl_gene_dossier` prompt sequences all 6 tools into one research workflow
 
