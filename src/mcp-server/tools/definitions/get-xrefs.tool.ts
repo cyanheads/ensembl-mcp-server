@@ -44,6 +44,8 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
   input: z.object({
     id: z
       .string()
+      .trim()
+      .min(1)
       .describe(
         'Ensembl stable gene ID (ENSG…) or transcript ID (ENST…). ' +
           'Use ensembl_lookup_gene to get the stable ID from a gene symbol. ' +

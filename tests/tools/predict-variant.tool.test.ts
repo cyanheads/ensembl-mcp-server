@@ -3,7 +3,7 @@
  * @module tests/tools/predict-variant.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensemblPredictVariant } from '@/mcp-server/tools/definitions/predict-variant.tool.js';
 import type { VepRecord } from '@/services/ensembl/types.js';
@@ -397,5 +397,33 @@ describe('ensemblPredictVariant', () => {
         },
       },
     });
+  });
+});
+
+describe('ensemblPredictVariant blank identifiers (issue #22)', () => {
+  const calls = () =>
+    mockPredictVariantHgvs.mock.calls.length +
+    mockPredictVariantRegion.mock.calls.length +
+    mockPredictVariantId.mock.calls.length;
+
+  it.each([
+    ['variant', { variant: '' }],
+    ['variant', { variant: '   ' }],
+    ['species', { variant: 'rs334', species: '' }],
+    ['species', { variant: 'rs334', species: '  ' }],
+  ])('rejects a blank %s as invalid_arguments before any request', async (_field, args) => {
+    mockPredictVariantHgvs.mockClear();
+    mockPredictVariantRegion.mockClear();
+    mockPredictVariantId.mockClear();
+    const result = await runToolContract(ensemblPredictVariant, args);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: -32602, data: { reason: 'invalid_arguments' } },
+    });
+    expect(calls()).toBe(0);
+  });
+
+  it('still defaults an omitted species to homo_sapiens', () => {
+    expect(ensemblPredictVariant.input.parse({ variant: 'rs334' }).species).toBe('homo_sapiens');
   });
 });

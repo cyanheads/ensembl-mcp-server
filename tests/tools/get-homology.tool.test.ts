@@ -3,7 +3,7 @@
  * @module tests/tools/get-homology.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { ensemblGetHomology } from '@/mcp-server/tools/definitions/get-homology.tool.js';
 import type { HomologyEntry } from '@/services/ensembl/types.js';
@@ -317,5 +317,36 @@ describe('ensemblGetHomology', () => {
         },
       },
     });
+  });
+});
+
+describe('ensemblGetHomology blank species (issue #22)', () => {
+  it.each(['', '   '])(
+    'rejects species %j as invalid_arguments before any request',
+    async (species) => {
+      mockGetHomologyBySymbol.mockClear();
+      mockGetHomologyById.mockClear();
+      const result = await runToolContract(ensemblGetHomology, { symbol: 'BRCA2', species });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: { code: -32602, data: { reason: 'invalid_arguments' } },
+      });
+      expect(mockGetHomologyBySymbol).not.toHaveBeenCalled();
+      expect(mockGetHomologyById).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still accepts a blank optional target_species', async () => {
+    mockGetHomologyBySymbol.mockClear();
+    mockGetHomologyBySymbol.mockResolvedValueOnce({
+      homologs: [mouseOrtholog],
+      resolvedQueryId: 'ENSG00000139618',
+    });
+    const result = await runToolContract(ensemblGetHomology, {
+      symbol: 'BRCA2',
+      target_species: '',
+    });
+    expect(result.isError).toBeUndefined();
+    expect(mockGetHomologyBySymbol).toHaveBeenCalledTimes(1);
   });
 });

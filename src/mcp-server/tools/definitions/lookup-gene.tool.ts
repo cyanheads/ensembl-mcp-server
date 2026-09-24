@@ -109,7 +109,11 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       ),
     ids: z
       .array(
-        z.string().describe('An Ensembl stable gene or transcript ID to resolve in this batch.'),
+        z
+          .string()
+          .trim()
+          .min(1)
+          .describe('An Ensembl stable gene or transcript ID to resolve in this batch.'),
       )
       .max(20)
       .optional()
@@ -118,7 +122,13 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
           'Returns a succeeded/failed split. Provide exactly one of symbol, id, ids, or symbols.',
       ),
     symbols: z
-      .array(z.string().describe('A gene symbol to resolve in this batch (e.g. BRCA2, TP53).'))
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .describe('A gene symbol to resolve in this batch (e.g. BRCA2, TP53).'),
+      )
       .max(20)
       .optional()
       .describe(

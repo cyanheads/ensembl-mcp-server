@@ -150,6 +150,8 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
   input: z.object({
     variant: z
       .string()
+      .trim()
+      .min(1)
       .describe(
         'Variant in one of three formats: ' +
           '(1) HGVS notation — transcript-relative: ENST00000380152.8:c.2T>A; ' +
@@ -162,6 +164,8 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
       ),
     species: z
       .string()
+      .trim()
+      .min(1)
       .default('homo_sapiens')
       .describe(
         'Species in Ensembl internal format. Default is homo_sapiens. ' +

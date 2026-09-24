@@ -3,7 +3,7 @@
  * @module tests/tools/list-species.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { ensemblListSpecies } from '@/mcp-server/tools/definitions/list-species.tool.js';
 import type { SpeciesInfo } from '@/services/ensembl/types.js';
@@ -135,5 +135,16 @@ describe('ensemblListSpecies', () => {
     // format should not crash on sparse item
     const blocks = ensemblListSpecies.format!(result);
     expect(blocks[0]!.type).toBe('text');
+  });
+});
+
+describe('ensemblListSpecies optional blanks (issue #22 regression)', () => {
+  it('still accepts a blank nameContains and returns the unfiltered list', async () => {
+    mockListSpecies.mockResolvedValueOnce(defaultSpecies);
+    const result = await runToolContract(ensemblListSpecies, { nameContains: '' });
+    expect(result.isError).toBeUndefined();
+    expect((result.structuredContent as { totalCount: number }).totalCount).toBe(
+      defaultSpecies.length,
+    );
   });
 });

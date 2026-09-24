@@ -75,6 +75,8 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       ),
     species: z
       .string()
+      .trim()
+      .min(1)
       .default('homo_sapiens')
       .describe(
         'Source species (the species the query gene belongs to) in Ensembl internal format. ' +

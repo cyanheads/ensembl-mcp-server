@@ -3,7 +3,7 @@
  * @module tests/tools/lookup-gene.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { ensemblLookupGene } from '@/mcp-server/tools/definitions/lookup-gene.tool.js';
 import type { GeneRecord } from '@/services/ensembl/types.js';
@@ -211,5 +211,24 @@ describe('ensemblLookupGene', () => {
     const blocks = ensemblLookupGene.format!({ gene: sparseGene });
     const text = (blocks[0] as { type: 'text'; text: string }).text;
     expect(text).toContain('ENSG00000000001');
+  });
+});
+
+describe('ensemblLookupGene blank batch entries (issue #22)', () => {
+  it.each([
+    ['ids', { ids: ['ENSG00000139618', ''] }],
+    ['ids', { ids: ['   '] }],
+    ['symbols', { symbols: ['BRCA2', ' '] }],
+    ['symbols', { symbols: [''] }],
+  ])('rejects a blank %s entry as invalid_arguments before any request', async (_field, args) => {
+    mockLookupGenesBatch.mockClear();
+    mockLookupSymbolsBatch.mockClear();
+    const result = await runToolContract(ensemblLookupGene, args);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: -32602, data: { reason: 'invalid_arguments' } },
+    });
+    expect(mockLookupGenesBatch).not.toHaveBeenCalled();
+    expect(mockLookupSymbolsBatch).not.toHaveBeenCalled();
   });
 });

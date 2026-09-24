@@ -3,7 +3,7 @@
  * @module tests/tools/get-xrefs.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { ensemblGetXrefs } from '@/mcp-server/tools/definitions/get-xrefs.tool.js';
 import type { XrefEntry } from '@/services/ensembl/types.js';
@@ -125,5 +125,25 @@ describe('ensemblGetXrefs', () => {
     const output = { xrefs: [sparseXref], totalCount: 1, queriedId: 'ENSG00000139618' };
     const blocks = ensemblGetXrefs.format!(output);
     expect(blocks[0]!.type).toBe('text');
+  });
+});
+
+describe('ensemblGetXrefs blank identifiers (issue #22)', () => {
+  it.each(['', ' \t '])('rejects id %j as invalid_arguments before any request', async (id) => {
+    mockGetXrefsById.mockClear();
+    const result = await runToolContract(ensemblGetXrefs, { id });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: -32602, data: { reason: 'invalid_arguments' } },
+    });
+    expect(mockGetXrefsById).not.toHaveBeenCalled();
+  });
+
+  it('still accepts a blank optional dbname and sends no filter', async () => {
+    mockGetXrefsById.mockClear();
+    mockGetXrefsById.mockResolvedValueOnce([hgncXref]);
+    const result = await runToolContract(ensemblGetXrefs, { id: 'ENSG00000139618', dbname: '' });
+    expect(result.isError).toBeUndefined();
+    expect(mockGetXrefsById).toHaveBeenCalledWith('ENSG00000139618', undefined, expect.anything());
   });
 });
