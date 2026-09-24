@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-09-23
+
+ensembl_query_region caps its feature list (max_results) and returns assemblyName; ensembl_get_sequence returns bounded offset/max_length windows; oversized, reversed, and out-of-bounds regions classify as invalid_region; blank required identifiers are rejected at the schema across all tools
+
 ## [0.4.4](changelog/0.4.x/0.4.4.md) — 2026-09-19
 
 mcp-ts-core 0.13.6 adoption: an unrecognized or misspelled argument key now succeeds instead of failing, argument rejections carry a reason and recovery hint under Invalid params, and every declared tool error closes with a (reason ...) suffix

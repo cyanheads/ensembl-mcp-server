@@ -1,6 +1,6 @@
 # ensembl-mcp-server - Directory Structure
 
-Generated on: 2026-09-19 15:51:39
+Generated on: 2026-09-24 01:51:14
 
 ```text
 ensembl-mcp-server/
@@ -28,6 +28,7 @@ ensembl-mcp-server/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
+│   ├── 0.5.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -175,11 +176,13 @@ ensembl-mcp-server/
 │   └── tools/
 │       ├── get-homology.tool.test.ts
 │       ├── get-sequence.tool.test.ts
+│       ├── get-sequence.upstream.test.ts
 │       ├── get-xrefs.tool.test.ts
 │       ├── list-species.tool.test.ts
 │       ├── lookup-gene.tool.test.ts
 │       ├── predict-variant.tool.test.ts
-│       └── query-region.tool.test.ts
+│       ├── query-region.tool.test.ts
+│       └── query-region.upstream.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
