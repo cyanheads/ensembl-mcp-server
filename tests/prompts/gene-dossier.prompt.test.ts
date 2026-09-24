@@ -71,6 +71,24 @@ describe('ensemblGeneDossierPrompt', () => {
     expect(text).toContain('rs334');
   });
 
+  it('step 3 reflects the ensembl_query_region cap and how to reach the rest (issue #17)', async () => {
+    const args = ensemblGeneDossierPrompt.args!.parse({ gene_symbol: 'BRCA2' });
+    const text = (
+      (await ensemblGeneDossierPrompt.generate(args))[0]!.content as {
+        type: string;
+        text: string;
+      }
+    ).text;
+    const step3 = text.slice(text.indexOf('3. **'), text.indexOf('4. **'));
+    expect(step3).toContain('feature=["variation"]');
+    // The variant count is the uncapped totalCount, not the length of the returned page.
+    expect(step3).toContain('totalCount');
+    expect(step3).toContain('max_results');
+    expect(step3).toContain('narrower');
+    // The synthesis step reports that same count.
+    expect(text.slice(text.indexOf('7. **'))).toContain('totalCount');
+  });
+
   it('message role is "user"', async () => {
     const args = ensemblGeneDossierPrompt.args!.parse({ gene_symbol: 'BRCA2' });
     const messages = await ensemblGeneDossierPrompt.generate(args);

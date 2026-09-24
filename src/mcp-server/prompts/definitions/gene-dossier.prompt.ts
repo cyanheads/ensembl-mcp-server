@@ -38,12 +38,18 @@ export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
           `Record the stable ID (ENSG…), genomic coordinates (chr:start-end:strand:assembly), ` +
           `biotype, and the canonical transcript ID (ENST…).\n\n` +
           `2. **Fetch the protein sequence** — call \`ensembl_get_sequence\` with the canonical ` +
-          `transcript ID from step 1 and type="protein". Record the amino acid sequence and its length.\n\n` +
+          `transcript ID from step 1 and type="protein". Record the amino acid sequence and its length. ` +
+          `A protein longer than 10,000 residues comes back as a first window (truncated=true); length ` +
+          `is still the full length, and the window already holds the leading residues step 7 needs.\n\n` +
           `3. **Find variants in the locus** — call \`ensembl_query_region\` with ` +
           `species="${args.species}", the gene's chromosomal region (chr:start-end from step 1), ` +
-          `and feature=["variation"]. Record the variant IDs (rsIDs), positions, consequence type, ` +
-          `and any clinical significance. Functional impact (HIGH/MODERATE/LOW) is not reported by ` +
-          `this step — it comes from VEP in step 4.\n\n` +
+          `and feature=["variation"]. A gene locus can hold tens of thousands of variants, so the ` +
+          `response returns the first 100 (max_results) while totalCount reports the full count — ` +
+          `record totalCount as the locus variant count. To see other variants, query a narrower ` +
+          `window (e.g. one exon's coordinates) or raise max_results. Record the variant IDs (rsIDs), ` +
+          `positions, consequence type, and any clinical significance of the returned variants. ` +
+          `Functional impact (HIGH/MODERATE/LOW) is not reported by this step — it comes from VEP ` +
+          `in step 4.\n\n` +
           `4. **Predict variant consequences** — for up to 3 variants from step 3, ` +
           `call \`ensembl_predict_variant\` with each variant's rsID (e.g. rs334), HGVS notation, ` +
           `or region+allele. This step returns the functional impact. ` +
@@ -58,7 +64,8 @@ export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
           `7. **Synthesize the dossier** — compile your findings into a structured report with sections:\n` +
           `   - Gene overview (ID, location, biotype, description)\n` +
           `   - Protein sequence summary (length, first 50 aa, key domains if known)\n` +
-          `   - Variant landscape (count, highest-impact findings, clinical significance)\n` +
+          `   - Variant landscape (count from step 3's totalCount, highest-impact findings, ` +
+          `clinical significance)\n` +
           `   - Conservation across species (ortholog table with perc_id)\n` +
           `   - External IDs for follow-up (UniProt → pubchem for structure, ` +
           `HGNC/EntrezGene → pubmed for literature, OMIM for disease associations)\n\n` +
