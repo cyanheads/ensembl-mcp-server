@@ -88,6 +88,16 @@ export type RawOverlapFeature = {
   rank?: number;
 };
 
+/**
+ * `/info/assembly/:species` — only the fields read here. `assembly_name` is the
+ * patch-level identifier (GRCh38.p14); `default_coord_system_version` is the plain
+ * assembly name (GRCh38) that per-feature `assembly_name` values carry.
+ */
+export type RawAssemblyInfo = {
+  assembly_name?: string;
+  default_coord_system_version?: string;
+};
+
 export type RawVepTranscriptConsequence = {
   transcript_id?: string;
   gene_id?: string;
@@ -242,6 +252,8 @@ export type OverlapFeature = {
   start: number;
   end: number;
   strand?: number;
+  /** Assembly the coordinates are on (e.g. GRCh38). Absent on regulatory features. */
+  assemblyName?: string;
   description?: string;
   consequenceType?: string;
   clinicalSignificance?: string[];

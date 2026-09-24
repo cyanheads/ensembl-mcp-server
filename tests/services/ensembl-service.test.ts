@@ -25,6 +25,10 @@ describe('EnsemblService', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', mockFetch);
     mockFetch.mockReset();
+    // Any request a test did not script fails loudly instead of resolving undefined.
+    mockFetch.mockImplementation(async (url: string) => {
+      throw new Error(`Unmocked fetch: ${url}`);
+    });
     initEnsemblService({} as AppConfig, createInMemoryStorage());
   });
 
@@ -127,6 +131,104 @@ describe('EnsemblService', () => {
       expect(feature?.parentId).toBe('ENST00000544455');
       expect(feature?.rank).toBe(1);
       expect(feature?.featureType).toBe('exon');
+    });
+  });
+
+  describe('queryRegion assembly_name mapping (issue #23)', () => {
+    it('maps a row assembly_name onto assemblyName and leaves regulatory rows without one', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: 'ENSG00000244734',
+            feature_type: 'gene',
+            seq_region_name: '11',
+            start: 5225464,
+            end: 5229395,
+            strand: -1,
+            assembly_name: 'GRCh38',
+          },
+          {
+            id: 'ENSR1_C4ND',
+            feature_type: 'regulatory',
+            seq_region_name: '1',
+            start: 999971,
+            end: 1001148,
+            strand: 0,
+            description: 'promoter',
+          },
+        ]),
+      );
+      const [gene, regulatory] = await getEnsemblService().queryRegion(
+        'homo_sapiens',
+        '11:5225000-5230000',
+        ['gene', 'regulatory'],
+        undefined,
+        createMockContext(),
+      );
+      expect(gene?.assemblyName).toBe('GRCh38');
+      expect(regulatory).not.toHaveProperty('assemblyName');
+    });
+  });
+
+  describe('getDefaultAssemblyName (issue #23)', () => {
+    const assemblyInfo = (version: string, patch: string) => ({
+      assembly_name: patch,
+      default_coord_system_version: version,
+      assembly_accession: 'GCA_000001405.29',
+      top_level_region: [],
+    });
+
+    it('reads default_coord_system_version, not the patch-level assembly_name', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(assemblyInfo('GRCh38', 'GRCh38.p14')));
+      const name = await getEnsemblService().getDefaultAssemblyName(
+        'homo_sapiens',
+        createMockContext(),
+      );
+      expect(name).toBe('GRCh38');
+      expect(mockFetch.mock.calls[0]?.[0]).toBe(
+        'https://rest.ensembl.org/info/assembly/homo_sapiens',
+      );
+    });
+
+    it('caches per species for the process — one request per species ever queried', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(assemblyInfo('GRCh38', 'GRCh38.p14')))
+        .mockResolvedValueOnce(jsonResponse(assemblyInfo('GRCm39', 'GRCm39')));
+      const service = getEnsemblService();
+      const ctx = createMockContext();
+      expect(await service.getDefaultAssemblyName('homo_sapiens', ctx)).toBe('GRCh38');
+      expect(await service.getDefaultAssemblyName('homo_sapiens', ctx)).toBe('GRCh38');
+      expect(await service.getDefaultAssemblyName('mus_musculus', ctx)).toBe('GRCm39');
+      expect(await service.getDefaultAssemblyName('mus_musculus', ctx)).toBe('GRCm39');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not cache a failed lookup — the next call asks again', async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          jsonResponse({ error: "Can not find internal name for species 'x'" }),
+        )
+        .mockResolvedValueOnce(jsonResponse(assemblyInfo('GRCh37', 'GRCh37.p13')));
+      const service = getEnsemblService();
+      const ctx = createMockContext();
+      await expect(service.getDefaultAssemblyName('homo_sapiens', ctx)).rejects.toThrow(
+        'Can not find internal name',
+      );
+      expect(await service.getDefaultAssemblyName('homo_sapiens', ctx)).toBe('GRCh37');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails, uncached, when the response carries no default_coord_system_version', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ assembly_name: 'GRCh38.p14' }))
+        .mockResolvedValueOnce(jsonResponse(assemblyInfo('GRCh38', 'GRCh38.p14')));
+      const service = getEnsemblService();
+      const ctx = createMockContext();
+      await expect(service.getDefaultAssemblyName('homo_sapiens', ctx)).rejects.toThrow(
+        'default_coord_system_version',
+      );
+      expect(await service.getDefaultAssemblyName('homo_sapiens', ctx)).toBe('GRCh38');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -16,6 +16,7 @@ import type {
   HomologyEntry,
   HomologyResult,
   OverlapFeature,
+  RawAssemblyInfo,
   RawGeneRecord,
   RawHomologyResponse,
   RawOverlapFeature,
@@ -98,6 +99,7 @@ function normalizeOverlapFeature(raw: RawOverlapFeature): OverlapFeature {
     start: raw.start ?? 0,
     end: raw.end ?? 0,
     ...(typeof raw.strand === 'number' && { strand: raw.strand }),
+    ...(raw.assembly_name && { assemblyName: raw.assembly_name }),
     ...(raw.description && { description: raw.description }),
     ...(raw.consequence_type && { consequenceType: raw.consequence_type }),
     ...(raw.clinical_significance?.length && {
@@ -196,6 +198,12 @@ function normalizeSpecies(raw: RawSpeciesResponse): SpeciesInfo[] {
 
 export class EnsemblService {
   private readonly baseUrl: string;
+  /**
+   * Default assembly per species for this process. The endpoint's assembly can
+   * only change with a restart under a different ENSEMBL_BASE_URL, so a resolved
+   * value is kept for the process lifetime; failed lookups are never stored.
+   */
+  private readonly defaultAssemblies = new Map<string, string>();
 
   constructor(_config: AppConfig, _storage: StorageService) {
     this.baseUrl = getServerConfig().baseUrl;
@@ -426,6 +434,29 @@ export class EnsemblService {
     const raw = await this.fetchWithRetry<RawOverlapFeature[]>(path, ctx);
     if (!Array.isArray(raw)) return [];
     return raw.map(normalizeOverlapFeature);
+  }
+
+  // --- Assembly ---
+
+  /**
+   * Plain default assembly name for a species (GRCh38, not the patch-level
+   * GRCh38.p14), matching the per-feature `assembly_name` overlap rows carry.
+   */
+  async getDefaultAssemblyName(species: string, ctx: Context): Promise<string> {
+    const cached = this.defaultAssemblies.get(species);
+    if (cached) return cached;
+    const raw = await this.fetchWithRetry<RawAssemblyInfo>(
+      `/info/assembly/${encodeURIComponent(species)}`,
+      ctx,
+    );
+    const name = raw.default_coord_system_version;
+    if (!name) {
+      throw serviceUnavailable('Ensembl assembly info carried no default_coord_system_version.', {
+        species,
+      });
+    }
+    this.defaultAssemblies.set(species, name);
+    return name;
   }
 
   // --- VEP ---
