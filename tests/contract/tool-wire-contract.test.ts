@@ -10,6 +10,7 @@
 
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
+import { ensemblGetSequence } from '@/mcp-server/tools/definitions/get-sequence.tool.js';
 import { ensemblGetXrefs } from '@/mcp-server/tools/definitions/get-xrefs.tool.js';
 import { ensemblPredictVariant } from '@/mcp-server/tools/definitions/predict-variant.tool.js';
 import type { VepRecord } from '@/services/ensembl/types.js';
@@ -17,12 +18,14 @@ import type { VepRecord } from '@/services/ensembl/types.js';
 const mockGetXrefsById = vi.fn();
 const mockPredictVariantId = vi.fn();
 const mockPredictVariantHgvs = vi.fn();
+const mockGetSequenceById = vi.fn();
 
 vi.mock('@/services/ensembl/ensembl-service.js', () => ({
   getEnsemblService: () => ({
     getXrefsById: mockGetXrefsById,
     predictVariantId: mockPredictVariantId,
     predictVariantHgvs: mockPredictVariantHgvs,
+    getSequenceById: mockGetSequenceById,
   }),
 }));
 
@@ -139,6 +142,22 @@ describe('tool wire contract — argument rejection', () => {
     expect(text).toContain('ensembl_get_xrefs');
     expect(text).toContain('id');
     expect(text).toContain('Recovery:');
+  });
+
+  it('rejects a blank required identifier before the handler runs (issue #22)', async () => {
+    mockGetXrefsById.mockClear();
+    const result = await runToolContract(ensemblGetXrefs, { id: '   ' });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ error: { code: -32602 } });
+    expect(errorData(result)).toMatchObject({
+      reason: 'invalid_arguments',
+      issues: [{ code: 'too_small', path: ['id'] }],
+    });
+    const text = contentText(result);
+    expect(text).toContain('ensembl_get_xrefs');
+    expect(text).toContain('(reason invalid_arguments)');
+    expect(mockGetXrefsById).not.toHaveBeenCalled();
   });
 
   it('rejects an out-of-range value', async () => {
@@ -269,5 +288,40 @@ describe('tool wire contract — nested success payload', () => {
     const text = contentText(result);
     expect(text).toContain('1 of 2');
     expect(text).toContain('showing 2 of 5');
+  });
+});
+
+describe('tool wire contract — sequence window (issue #19)', () => {
+  it('carries the same bounded window, truthful length, and next offset on both surfaces', async () => {
+    const full = 'ACGTTGCA'.repeat(2_000).slice(0, 15_001);
+    mockGetSequenceById.mockResolvedValueOnce({
+      id: 'ENSG00000139618',
+      type: 'genomic',
+      seq: full,
+      length: full.length,
+    });
+
+    const result = await runToolContract(ensemblGetSequence, {
+      id: 'ENSG00000139618',
+      offset: 10_000,
+      max_length: 5_000,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const structured = result.structuredContent as { seq: string; notice?: string };
+    expect(structured).toMatchObject({
+      length: 15_001,
+      offset: 10_000,
+      truncated: true,
+      nextOffset: 15_000,
+    });
+    expect(structured.seq).toBe(full.slice(10_000, 15_000));
+    expect(structured.notice).toContain('offset 15000');
+
+    const text = contentText(result);
+    expect(text).toContain(full.slice(10_000, 15_000));
+    expect(text).toContain('15,001 bp');
+    expect(text).toContain('next offset 15000');
+    expect(text).toContain(`> ${structured.notice}`);
   });
 });

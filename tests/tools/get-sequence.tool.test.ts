@@ -3,7 +3,7 @@
  * @module tests/tools/get-sequence.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensemblGetSequence } from '@/mcp-server/tools/definitions/get-sequence.tool.js';
 import type { SequenceRecord } from '@/services/ensembl/types.js';
@@ -24,6 +24,34 @@ const mockSequence: SequenceRecord = {
   seq: 'ATCGATCGATCG',
   length: 12,
   description: 'BRCA2 gene genomic sequence',
+};
+
+/** Deterministic non-repeating ACGT text, so a mis-sliced window never matches by accident. */
+function dna(length: number, seed = 7): string {
+  let x = seed;
+  let out = '';
+  for (let i = 0; i < length; i++) {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+    out += 'ACGT'[(x >>> 16) & 3];
+  }
+  return out;
+}
+
+/** Concatenated text of every `content[]` block — what a `content`-only client reads. */
+function contentText(result: Awaited<ReturnType<typeof runToolContract>>): string {
+  return (result.content ?? [])
+    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n');
+}
+
+type WindowResult = {
+  seq: string;
+  length: number;
+  offset: number;
+  truncated: boolean;
+  nextOffset?: number;
+  notice?: string;
 };
 
 const mockProteinSeq: SequenceRecord = {
@@ -250,24 +278,39 @@ describe('ensemblGetSequence', () => {
   });
 
   it('formats short sequence inline without truncation', () => {
-    const output = { id: 'ENST00000380152', type: 'protein', seq: 'MPIGSKER', length: 8 };
+    const output = {
+      id: 'ENST00000380152',
+      type: 'protein',
+      seq: 'MPIGSKER',
+      length: 8,
+      offset: 0,
+      truncated: false,
+    };
     const blocks = ensemblGetSequence.format!(output);
     const text = (blocks[0] as { type: 'text'; text: string }).text;
     expect(text).toContain('ENST00000380152');
     expect(text).toContain('protein');
     expect(text).toContain('MPIGSKER');
-    expect(text).not.toContain('total characters');
+    expect(text).toContain('not truncated');
+    expect(text).not.toContain('next offset');
   });
 
-  it('formats long sequence with truncation notice', () => {
-    const longSeq = 'A'.repeat(300);
-    const output = { id: 'ENSG00000139618', type: 'genomic', seq: longSeq, length: 300 };
-    const blocks = ensemblGetSequence.format!(output);
-    const text = (blocks[0] as { type: 'text'; text: string }).text;
-    expect(text).toContain('total characters');
-    expect(text).toContain('300 bp');
-    // Only first 200 chars shown
-    expect(text).toContain('A'.repeat(200));
+  it('formats a window longer than 200 characters in full, with the window range', () => {
+    const window = dna(300);
+    const output = {
+      id: 'ENSG00000139618',
+      type: 'genomic',
+      seq: window,
+      length: 85183,
+      offset: 0,
+      truncated: true,
+      nextOffset: 300,
+    };
+    const text = (ensemblGetSequence.format!(output)[0] as { type: 'text'; text: string }).text;
+    expect(text).toContain(window);
+    expect(text).toContain('85,183 bp');
+    expect(text).toContain('300 characters from offset 0');
+    expect(text).toContain('next offset 300');
   });
 
   it('formats sequence with optional description when present', () => {
@@ -276,10 +319,326 @@ describe('ensemblGetSequence', () => {
       type: 'genomic',
       seq: 'ATCG',
       length: 4,
+      offset: 0,
+      truncated: false,
       description: 'BRCA2 genomic',
     };
     const blocks = ensemblGetSequence.format!(output);
     const text = (blocks[0] as { type: 'text'; text: string }).text;
     expect(text).toContain('BRCA2 genomic');
+  });
+});
+
+describe('ensemblGetSequence sequence windows (issue #19)', () => {
+  const brca2 = dna(85_183);
+  const brca2Record: SequenceRecord = {
+    id: 'ENSG00000139618',
+    type: 'genomic',
+    seq: brca2,
+    length: brca2.length,
+  };
+
+  beforeEach(() => {
+    mockGetSequenceById.mockReset();
+    mockGetSequenceByRegion.mockReset();
+    mockGetSequenceById.mockResolvedValue(brca2Record);
+  });
+
+  it('returns the first 10,000 characters by default with the full length on both surfaces', async () => {
+    const result = await runToolContract(ensemblGetSequence, { id: 'ENSG00000139618' });
+    expect(result.isError).toBeUndefined();
+    const structured = result.structuredContent as WindowResult;
+    expect(structured.seq).toBe(brca2.slice(0, 10_000));
+    expect(structured).toMatchObject({
+      length: 85_183,
+      offset: 0,
+      truncated: true,
+      nextOffset: 10_000,
+    });
+    expect(structured.notice).toContain('10,000 of 85,183');
+    expect(structured.notice).toContain('offset 10000');
+
+    const text = contentText(result);
+    // The whole window reaches content[], not a preview of it.
+    expect(text).toContain(brca2.slice(0, 10_000));
+    expect(text).not.toContain(brca2.slice(0, 10_001));
+    expect(text).toContain('next offset 10000');
+    expect(text).toContain('> Showing 10,000 of 85,183');
+  });
+
+  it('walking nextOffset reconstructs the full sequence byte-for-byte', async () => {
+    const pages: WindowResult[] = [];
+    let offset: number | undefined = 0;
+    while (offset !== undefined) {
+      const result = await runToolContract(ensemblGetSequence, {
+        id: 'ENSG00000139618',
+        offset,
+        max_length: 30_000,
+      });
+      const page = result.structuredContent as WindowResult;
+      // content[] carries the same window as structuredContent on every page.
+      expect(contentText(result)).toContain(page.seq);
+      pages.push(page);
+      offset = page.nextOffset;
+    }
+    expect(pages.map((p) => p.offset)).toEqual([0, 30_000, 60_000]);
+    expect(pages.map((p) => p.seq).join('')).toBe(brca2);
+    const last = pages.at(-1)!;
+    expect(last.seq).toHaveLength(25_183);
+    expect(last.truncated).toBe(false);
+    expect(last).not.toHaveProperty('nextOffset');
+    expect(last.notice).toBeUndefined();
+    expect(pages.every((p) => p.length === 85_183)).toBe(true);
+  });
+
+  it('walks the default window to the end in nine pages', async () => {
+    let joined = '';
+    let offset: number | undefined = 0;
+    let calls = 0;
+    while (offset !== undefined) {
+      const result = await runToolContract(ensemblGetSequence, { id: 'ENSG00000139618', offset });
+      const page = result.structuredContent as WindowResult;
+      joined += page.seq;
+      offset = page.nextOffset;
+      calls++;
+    }
+    expect(calls).toBe(9);
+    expect(joined).toBe(brca2);
+  });
+
+  it('max_length 0 returns everything from offset to the end, uncapped', async () => {
+    const result = await runToolContract(ensemblGetSequence, {
+      id: 'ENSG00000139618',
+      offset: 5_000,
+      max_length: 0,
+    });
+    const structured = result.structuredContent as WindowResult;
+    expect(structured.seq).toBe(brca2.slice(5_000));
+    expect(structured).toMatchObject({ length: 85_183, offset: 5_000, truncated: false });
+    expect(structured).not.toHaveProperty('nextOffset');
+    expect(structured.notice).toBeUndefined();
+    expect(contentText(result)).toContain(brca2.slice(5_000));
+  });
+
+  it('returns a sequence exactly at the window size whole, with no truncation or notice', async () => {
+    const exact = dna(10_000, 11);
+    mockGetSequenceById.mockResolvedValueOnce({ ...brca2Record, seq: exact, length: 10_000 });
+    const result = await runToolContract(ensemblGetSequence, { id: 'ENSG00000139618' });
+    const structured = result.structuredContent as WindowResult;
+    expect(structured.seq).toBe(exact);
+    expect(structured).toMatchObject({ length: 10_000, offset: 0, truncated: false });
+    expect(structured).not.toHaveProperty('nextOffset');
+    expect(structured.notice).toBeUndefined();
+  });
+
+  it.each([
+    ['past the end', 90_000],
+    ['exactly at the end', 85_183],
+  ])('returns an empty window with a notice for an offset %s, not an error', async (_l, offset) => {
+    const result = await runToolContract(ensemblGetSequence, { id: 'ENSG00000139618', offset });
+    expect(result.isError).toBeUndefined();
+    const structured = result.structuredContent as WindowResult;
+    expect(structured).toMatchObject({ seq: '', length: 85_183, offset, truncated: false });
+    expect(structured).not.toHaveProperty('nextOffset');
+    expect(structured.notice).toContain(`offset ${offset}`);
+    expect(structured.notice).toContain('85,183');
+    const text = contentText(result);
+    expect(text).toContain('No sequence characters at this offset');
+    expect(text).toContain(`> No characters returned: offset ${offset}`);
+  });
+
+  it('slices the sequence the service resolved, after expansion, in region mode', async () => {
+    const expanded = dna(35, 3);
+    mockGetSequenceByRegion.mockResolvedValueOnce({
+      id: 'chromosome:GRCh38:13:32315076:32315110:1',
+      type: 'genomic',
+      seq: expanded,
+      length: 35,
+    });
+    const result = await runToolContract(ensemblGetSequence, {
+      id: '13:32315086-32315100',
+      species: 'homo_sapiens',
+      expand_5prime: 10,
+      expand_3prime: 10,
+      offset: 5,
+      max_length: 20,
+    });
+    expect(mockGetSequenceByRegion).toHaveBeenCalledWith(
+      'homo_sapiens',
+      '13:32315086-32315100',
+      10,
+      10,
+      expect.anything(),
+    );
+    expect(result.structuredContent).toMatchObject({
+      seq: expanded.slice(5, 25),
+      length: 35,
+      offset: 5,
+      truncated: true,
+      nextOffset: 25,
+    });
+  });
+
+  it.each([
+    [{ offset: -1 }, 'offset'],
+    [{ offset: 1.5 }, 'offset'],
+    [{ max_length: -5 }, 'max_length'],
+  ])('rejects %j as invalid_arguments before any request', async (args, field) => {
+    const result = await runToolContract(ensemblGetSequence, { id: 'ENSG00000139618', ...args });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: -32602, data: { reason: 'invalid_arguments', issues: [{ path: [field] }] } },
+    });
+    expect(mockGetSequenceById).not.toHaveBeenCalled();
+  });
+});
+
+describe('ensemblGetSequence non-genomic type in region mode (issue #25)', () => {
+  beforeEach(() => {
+    mockGetSequenceById.mockReset();
+    mockGetSequenceByRegion.mockReset();
+  });
+
+  const typeMismatchRecovery = () =>
+    ensemblGetSequence.errors!.find((e) => e.reason === 'type_mismatch')!.recovery;
+
+  it.each([
+    ['prefixed', { id: 'homo_sapiens:13:32315086-32320268' }, 'cdna'],
+    ['prefixed', { id: 'homo_sapiens:13:32315086-32320268' }, 'cds'],
+    ['prefixed', { id: 'homo_sapiens:13:32315086-32320268' }, 'protein'],
+    ['bare', { id: '13:32315086-32320268', species: 'homo_sapiens' }, 'cdna'],
+    ['bare', { id: '13:32315086-32320268', species: 'homo_sapiens' }, 'cds'],
+    ['bare', { id: '13:32315086-32320268', species: 'homo_sapiens' }, 'protein'],
+  ])(
+    'rejects a %s region with type %s as type_mismatch before any request',
+    async (_form, args, type) => {
+      const result = await runToolContract(ensemblGetSequence, { ...args, type } as never);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: -32007,
+          data: { reason: 'type_mismatch', recovery: { hint: typeMismatchRecovery() } },
+        },
+      });
+      const text = contentText(result);
+      expect(text).toContain(`"${type}"`);
+      expect(text).toContain('genomic-only');
+      expect(text).toContain('(reason type_mismatch)');
+      expect(mockGetSequenceByRegion).not.toHaveBeenCalled();
+      expect(mockGetSequenceById).not.toHaveBeenCalled();
+    },
+  );
+
+  it('covers region ids in the declared type_mismatch contract', () => {
+    const entry = ensemblGetSequence.errors!.find((e) => e.reason === 'type_mismatch')!;
+    expect(entry.when).toContain('region');
+    expect(entry.recovery).toContain('genomic-only');
+  });
+
+  it('states in the type field description that region ids are genomic-only', () => {
+    expect(ensemblGetSequence.input.shape.type.description).toContain('genomic-only');
+  });
+
+  it.each([
+    ['omitted', {}],
+    ['genomic', { type: 'genomic' as const }],
+  ])('proceeds in region mode when type is %s', async (_label, typeArg) => {
+    mockGetSequenceByRegion.mockResolvedValueOnce({ ...mockSequence, id: '13:1-12' });
+    const result = await runToolContract(ensemblGetSequence, {
+      id: '13:32315086-32315100',
+      species: 'homo_sapiens',
+      ...typeArg,
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({ type: 'genomic' });
+    expect(mockGetSequenceByRegion).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves stable-ID mode unaffected: a non-genomic type on a transcript ID reaches the service', async () => {
+    mockGetSequenceById.mockResolvedValueOnce(mockProteinSeq);
+    const result = await runToolContract(ensemblGetSequence, {
+      id: 'ENST00000380152',
+      type: 'cdna',
+    });
+    expect(result.isError).toBeUndefined();
+    expect(mockGetSequenceById).toHaveBeenCalledWith(
+      'ENST00000380152',
+      'cdna',
+      0,
+      0,
+      expect.anything(),
+    );
+    expect(mockGetSequenceByRegion).not.toHaveBeenCalled();
+  });
+});
+
+describe('ensemblGetSequence invalid_region contract (issue #28)', () => {
+  it('declares invalid_region as a ValidationError naming the 10,000,000-base limit', () => {
+    const entry = ensemblGetSequence.errors!.find((e) => e.reason === 'invalid_region')!;
+    expect(entry.code).toBe(-32007);
+    expect(entry.when).toContain('start after its end');
+    expect(entry.when).toContain('10,000,000');
+    expect(entry.recovery).toContain('10,000,000');
+  });
+
+  it('states the region bounds in the id description', () => {
+    const text = ensemblGetSequence.input.shape.id.description!;
+    expect(text).toContain('start at or below end');
+    expect(text).toContain('10,000,000 bases');
+  });
+
+  it('rejects reversed coordinates without calling the service', async () => {
+    mockGetSequenceByRegion.mockClear();
+    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
+    const input = ensemblGetSequence.input.parse({ id: '1:500-100', species: 'homo_sapiens' });
+    await expect(ensemblGetSequence.handler(input, ctx)).rejects.toMatchObject({
+      code: -32007,
+      data: { reason: 'invalid_region' },
+    });
+    expect(mockGetSequenceByRegion).not.toHaveBeenCalled();
+  });
+});
+
+describe('ensemblGetSequence blank id (issue #22)', () => {
+  it.each(['', '   '])('rejects id %j as invalid_arguments before any request', async (id) => {
+    mockGetSequenceById.mockClear();
+    mockGetSequenceByRegion.mockClear();
+    const result = await runToolContract(ensemblGetSequence, { id, type: 'genomic' });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: -32602, data: { reason: 'invalid_arguments' } },
+    });
+    expect(mockGetSequenceById).not.toHaveBeenCalled();
+    expect(mockGetSequenceByRegion).not.toHaveBeenCalled();
+  });
+
+  it('forwards a padded stable ID trimmed', async () => {
+    mockGetSequenceById.mockReset();
+    mockGetSequenceById.mockResolvedValueOnce(mockSequence);
+    const result = await runToolContract(ensemblGetSequence, { id: '  ENSG00000139618 ' });
+    expect(result.isError).toBeUndefined();
+    expect(mockGetSequenceById).toHaveBeenCalledWith(
+      'ENSG00000139618',
+      'genomic',
+      0,
+      0,
+      expect.anything(),
+    );
+  });
+
+  it('routes a padded region to region mode', async () => {
+    mockGetSequenceByRegion.mockReset();
+    mockGetSequenceByRegion.mockResolvedValueOnce({ ...mockSequence, id: '13:1-12' });
+    await runToolContract(ensemblGetSequence, {
+      id: ' 13:32315086-32315100 ',
+      species: 'homo_sapiens',
+    });
+    expect(mockGetSequenceByRegion).toHaveBeenCalledWith(
+      'homo_sapiens',
+      '13:32315086-32315100',
+      0,
+      0,
+      expect.anything(),
+    );
   });
 });
