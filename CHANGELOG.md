@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.1](changelog/0.5.x/0.5.1.md) — 2026-10-08
+
+Adopts mcp-ts-core 0.13.14: tool errors carry a request ID and their declared recovery hint with no server stack or request context in error data, numeric and boolean strings, a lone string for a list, and null optional arguments are repaired instead of rejected, and the Docker image installs dependencies on the build platform.
+
 ## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-09-23
 
 ensembl_query_region caps its feature list (max_results) and returns assemblyName; ensembl_get_sequence returns bounded offset/max_length windows; oversized, reversed, and out-of-bounds regions classify as invalid_region; blank required identifiers are rejected at the schema across all tools
