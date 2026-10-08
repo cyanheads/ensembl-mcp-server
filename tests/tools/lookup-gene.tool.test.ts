@@ -160,13 +160,18 @@ describe('ensemblLookupGene', () => {
 
   it('surfaces the declared recovery hint on a not_found error (issue #16)', async () => {
     mockLookupGene.mockRejectedValueOnce(new Error('not found in Ensembl'));
-    const ctx = createMockContext({ errors: ensemblLookupGene.errors });
-    const input = ensemblLookupGene.input.parse({ symbol: 'FAKEGENE', species: 'homo_sapiens' });
-    await expect(ensemblLookupGene.handler(input, ctx)).rejects.toMatchObject({
-      data: {
-        reason: 'not_found',
-        recovery: {
-          hint: ensemblLookupGene.errors!.find((e) => e.reason === 'not_found')!.recovery,
+    const result = await runToolContract(ensemblLookupGene, {
+      symbol: 'FAKEGENE',
+      species: 'homo_sapiens',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        data: {
+          reason: 'not_found',
+          recovery: {
+            hint: ensemblLookupGene.errors!.find((e) => e.reason === 'not_found')!.recovery,
+          },
         },
       },
     });

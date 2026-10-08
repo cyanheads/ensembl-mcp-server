@@ -180,15 +180,12 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     const service = getEnsemblService();
 
     if (!input.symbol?.trim() && !input.id?.trim()) {
-      throw ctx.fail('no_input', 'Provide either symbol (with species) or a stable gene ID.', {
-        ...ctx.recoveryFor('no_input'),
-      });
+      throw ctx.fail('no_input', 'Provide either symbol (with species) or a stable gene ID.');
     }
     if (input.id?.trim() && input.symbol?.trim()) {
       throw ctx.fail(
         'conflicting_input',
         'Provide either symbol or id, not both — they may resolve to different genes.',
-        { ...ctx.recoveryFor('conflicting_input') },
       );
     }
 
@@ -203,9 +200,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           if (/not found|no valid lookup|page not found/i.test(msg)) {
-            throw ctx.fail('not_found', `Gene ID "${idTrimmed}" not found in Ensembl.`, {
-              ...ctx.recoveryFor('not_found'),
-            });
+            throw ctx.fail('not_found', `Gene ID "${idTrimmed}" not found in Ensembl.`);
           }
           throw err;
         });
@@ -223,7 +218,6 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
             throw ctx.fail(
               'not_found',
               `Gene symbol "${submittedSymbol}" not found in ${input.species}.`,
-              { ...ctx.recoveryFor('not_found') },
             );
           }
           throw err;

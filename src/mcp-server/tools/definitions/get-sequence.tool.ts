@@ -217,7 +217,6 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
         throw ctx.fail(
           'type_mismatch',
           `Region ids are genomic-only — type "${input.type}" is not available for region ${input.id}.`,
-          { ...ctx.recoveryFor('type_mismatch') },
         );
       }
       // For the prefixed form the species is the segment before the first colon and
@@ -231,7 +230,6 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
         throw ctx.fail(
           'missing_species',
           `Region ${input.id} needs a species — set species (e.g. homo_sapiens) or use the species:chr:start-end id form.`,
-          { ...ctx.recoveryFor('missing_species') },
         );
       }
       // Both region shapes end in start-end after the last colon. Comparing the digit
@@ -245,7 +243,6 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
         throw ctx.fail(
           'invalid_region',
           `Region ${input.id} is reversed: start ${start} is greater than its end ${end}.`,
-          { ...ctx.recoveryFor('invalid_region') },
         );
       }
       resolved = await service
@@ -253,14 +250,10 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           if (/cannot request a slice|maximum allowed length|no slice found/i.test(msg)) {
-            throw ctx.fail('invalid_region', `Invalid region ${input.id}: ${msg}`, {
-              ...ctx.recoveryFor('invalid_region'),
-            });
+            throw ctx.fail('invalid_region', `Invalid region ${input.id}: ${msg}`);
           }
           if (/not found|invalid|no stable id/i.test(msg)) {
-            throw ctx.fail('not_found', `Region ${input.id} not found: ${msg}`, {
-              ...ctx.recoveryFor('not_found'),
-            });
+            throw ctx.fail('not_found', `Region ${input.id} not found: ${msg}`);
           }
           throw err;
         });
@@ -284,13 +277,10 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
               'type_mismatch',
               `Cannot request type "${input.type}" from a gene ID — use a transcript or protein stable ID instead. ` +
                 `Call ensembl_lookup_gene with expand_transcripts=true to get transcript IDs.`,
-              { ...ctx.recoveryFor('type_mismatch') },
             );
           }
           if (notFound) {
-            throw ctx.fail('not_found', `ID ${input.id} not found in Ensembl.`, {
-              ...ctx.recoveryFor('not_found'),
-            });
+            throw ctx.fail('not_found', `ID ${input.id} not found in Ensembl.`);
           }
           throw err;
         });

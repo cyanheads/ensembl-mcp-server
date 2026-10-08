@@ -307,13 +307,15 @@ describe('ensemblGetHomology', () => {
 
   it('surfaces the declared recovery hint on a not_found error (issue #16)', async () => {
     mockGetHomologyBySymbol.mockRejectedValueOnce(new Error('Gene not found in Ensembl'));
-    const ctx = createMockContext({ errors: ensemblGetHomology.errors });
-    const input = ensemblGetHomology.input.parse({ symbol: 'FAKEGENE' });
-    await expect(ensemblGetHomology.handler(input, ctx)).rejects.toMatchObject({
-      data: {
-        reason: 'not_found',
-        recovery: {
-          hint: ensemblGetHomology.errors!.find((e) => e.reason === 'not_found')!.recovery,
+    const result = await runToolContract(ensemblGetHomology, { symbol: 'FAKEGENE' });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        data: {
+          reason: 'not_found',
+          recovery: {
+            hint: ensemblGetHomology.errors!.find((e) => e.reason === 'not_found')!.recovery,
+          },
         },
       },
     });

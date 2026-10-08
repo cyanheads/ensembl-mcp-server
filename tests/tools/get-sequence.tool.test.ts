@@ -265,13 +265,18 @@ describe('ensemblGetSequence', () => {
 
   it('surfaces the declared recovery hint on a type_mismatch error (issue #16)', async () => {
     mockGetSequenceById.mockRejectedValueOnce(new Error('protein type incompatible with gene ID'));
-    const ctx = createMockContext({ errors: ensemblGetSequence.errors });
-    const input = ensemblGetSequence.input.parse({ id: 'ENSG00000139618', type: 'protein' });
-    await expect(ensemblGetSequence.handler(input, ctx)).rejects.toMatchObject({
-      data: {
-        reason: 'type_mismatch',
-        recovery: {
-          hint: ensemblGetSequence.errors!.find((e) => e.reason === 'type_mismatch')!.recovery,
+    const result = await runToolContract(ensemblGetSequence, {
+      id: 'ENSG00000139618',
+      type: 'protein',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        data: {
+          reason: 'type_mismatch',
+          recovery: {
+            hint: ensemblGetSequence.errors!.find((e) => e.reason === 'type_mismatch')!.recovery,
+          },
         },
       },
     });

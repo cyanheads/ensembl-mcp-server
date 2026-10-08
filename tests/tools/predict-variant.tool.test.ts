@@ -387,13 +387,15 @@ describe('ensemblPredictVariant', () => {
     mockPredictVariantId.mockRejectedValueOnce(
       new Error("No variant found with ID 'rs99999999999'"),
     );
-    const ctx = createMockContext({ errors: ensemblPredictVariant.errors });
-    const input = ensemblPredictVariant.input.parse({ variant: 'rs99999999999' });
-    await expect(ensemblPredictVariant.handler(input, ctx)).rejects.toMatchObject({
-      data: {
-        reason: 'not_found',
-        recovery: {
-          hint: ensemblPredictVariant.errors!.find((e) => e.reason === 'not_found')!.recovery,
+    const result = await runToolContract(ensemblPredictVariant, { variant: 'rs99999999999' });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        data: {
+          reason: 'not_found',
+          recovery: {
+            hint: ensemblPredictVariant.errors!.find((e) => e.reason === 'not_found')!.recovery,
+          },
         },
       },
     });

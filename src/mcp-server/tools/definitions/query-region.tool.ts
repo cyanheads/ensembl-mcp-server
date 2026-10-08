@@ -210,14 +210,10 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
           /no slice found|cannot request a slice|could not decode region/i.test(msg) ||
           /maximum allowed length/i.test(msg)
         ) {
-          throw ctx.fail('invalid_region', `Invalid region "${input.region}": ${msg}`, {
-            ...ctx.recoveryFor('invalid_region'),
-          });
+          throw ctx.fail('invalid_region', `Invalid region "${input.region}": ${msg}`);
         }
         if (/species|invalid|unrecognized/i.test(msg)) {
-          throw ctx.fail('invalid_species', `Species "${input.species}" not recognized.`, {
-            ...ctx.recoveryFor('invalid_species'),
-          });
+          throw ctx.fail('invalid_species', `Species "${input.species}" not recognized.`);
         }
         throw err;
       });

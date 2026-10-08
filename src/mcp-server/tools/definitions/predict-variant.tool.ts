@@ -287,13 +287,10 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
             throw ctx.fail(
               'invalid_notation',
               `Invalid region+allele notation "${input.variant}": ${msg}`,
-              { ...ctx.recoveryFor('invalid_notation') },
             );
           }
           if (/not found|outside/i.test(msg)) {
-            throw ctx.fail('not_found', `Variant location not found: ${msg}`, {
-              ...ctx.recoveryFor('not_found'),
-            });
+            throw ctx.fail('not_found', `Variant location not found: ${msg}`);
           }
           throw err;
         });
@@ -304,15 +301,12 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
           const msg = err instanceof Error ? err.message : String(err);
           // A well-formed rsID that dbSNP does not know reports "No variant found with ID …".
           if (/not found|no variant|unknown variant/i.test(msg)) {
-            throw ctx.fail('not_found', `Variant identifier ${input.variant} not found in dbSNP.`, {
-              ...ctx.recoveryFor('not_found'),
-            });
+            throw ctx.fail('not_found', `Variant identifier ${input.variant} not found in dbSNP.`);
           }
           if (/invalid|unrecognized|parse|malformed/i.test(msg)) {
             throw ctx.fail(
               'invalid_notation',
               `Invalid variant identifier "${input.variant}": ${msg}`,
-              { ...ctx.recoveryFor('invalid_notation') },
             );
           }
           throw err;
@@ -323,14 +317,10 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           if (/invalid|unrecognized|parse|malformed|hgvs/i.test(msg)) {
-            throw ctx.fail('invalid_notation', `Invalid HGVS notation "${input.variant}": ${msg}`, {
-              ...ctx.recoveryFor('invalid_notation'),
-            });
+            throw ctx.fail('invalid_notation', `Invalid HGVS notation "${input.variant}": ${msg}`);
           }
           if (/not found/i.test(msg)) {
-            throw ctx.fail('not_found', `Variant ${input.variant} not found.`, {
-              ...ctx.recoveryFor('not_found'),
-            });
+            throw ctx.fail('not_found', `Variant ${input.variant} not found.`);
           }
           throw err;
         });
