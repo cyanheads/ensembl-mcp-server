@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.5.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/ensembl-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/ensembl-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/ensembl-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.5.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/ensembl-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.2.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/ensembl-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/ensembl-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -64,83 +64,66 @@ All resource data is also reachable via the `ensembl_list_species` tool, which a
 
 ### `ensembl_list_species` <sub>tool</sub>
 
-- Filter by division (`EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, `EnsemblProtists`) or `nameContains` for a local substring match against name, display name, and common name
-- Omit `division` to return the endpoint default division (vertebrates, ~356 species on the default GRCh38 endpoint)
-- Returns internal name (the value every other tool expects), display name, common name, taxon ID, assembly, and division
-- Required first step — species names like `homo_sapiens` are opaque to non-biologists
+- Optional `division` (`EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, `EnsemblProtists`; omitted, the endpoint default — vertebrates, ~356 species on GRCh38) and `nameContains`, a substring match against name, display name, and common name
+- Returns the internal name every other tool expects (`homo_sapiens`), plus display name, common name, taxon ID, assembly, and division
 
 ---
 
 ### `ensembl_lookup_gene` <sub>tool</sub>
 
-- Exactly one of `symbol` (+ optional `species`, default `homo_sapiens`), `id`, `ids` (batch, up to 20), or `symbols` (batch, up to 20)
-- `expand_transcripts` (default `false`) adds the full transcript list with biotype and canonical flag
-- Batch modes (`ids`/`symbols`) return a `succeeded`/`failed` split with per-item error strings instead of failing the call
-- Errors: `not_found`, `invalid_species`, `no_input`, `conflicting_input`
+- Exactly one of `symbol` (+ `species`, default `homo_sapiens`), `id`, `ids`, or `symbols` (batches up to 20); `expand_transcripts` (default `false`) adds the transcript list with biotype and canonical flag
+- A single lookup returns `gene`; a batch returns a `succeeded`/`failed` split with per-item errors instead of failing the call. Errors: `not_found`, `invalid_species`, `no_input`, `conflicting_input`
 
 ---
 
 ### `ensembl_get_sequence` <sub>tool</sub>
 
-- `type`: `genomic` (default, includes introns), `cdna` (spliced), `cds` (coding only), `protein`
-- Accepts a stable ID (`ENSG…`/`ENST…`/`ENSP…`) or a region — `species:chr:start-end`, or bare `chr:start-end` with `species` set; a region spans at most 10,000,000 bases, with start at or below end
-- `expand_5prime` / `expand_3prime` (default `0`) extend flanking base pairs for genomic and region queries
-- `protein` and `cds` require a transcript or protein ID, not a gene ID; region ids are genomic-only
-- Returns a bounded window: `offset` (0-based, default `0`) and `max_length` (default `10000`, `0` for the rest uncapped) index the resolved sequence, flanks included
-- `length` is always the full sequence length; `truncated` and `nextOffset` say whether more follows and where to resume, so walking `nextOffset` reconstructs the whole sequence
+- A stable ID (`ENSG…`/`ENST…`/`ENSP…`) or a region (`species:chr:start-end`, or `chr:start-end` with `species`; at most 10,000,000 bases); `type` is `genomic` (default), `cdna`, `cds`, or `protein`, the last three from a transcript or protein ID only; `expand_5prime`/`expand_3prime` add flanking bases
+- Returns a window set by `offset` (default `0`) and `max_length` (default `10000`, `0` uncapped); `length` is the full sequence length, and `truncated`/`nextOffset` say where to resume
 - Errors: `not_found`, `type_mismatch`, `missing_species`, `invalid_region`
 
 ---
 
 ### `ensembl_query_region` <sub>tool</sub>
 
-- `region` in `chr:start-end` format, at most 5,000,000 bases; `feature` array (at least one) defaults to `["gene"]`, also accepts `transcript`, `variation`, `regulatory`, `exon`; optional `biotype` filter
-- Defaults to genes only — requesting `variation` on a large locus can match 44,000+ features
-- `max_results` caps the feature list (default `100`, `0` uncapped); `totalCount` always reports the true count found
-- `assemblyName` (e.g. `GRCh38`) names the assembly the coordinates are on
-- Exon rows carry a `parentId` and `rank`, since one exon is reported once per parent transcript
-- Errors: `invalid_region`, `invalid_species`
+- `species` and `region` (`chr:start-end`, at most 5,000,000 bases); `feature` defaults to `["gene"]` and also accepts `transcript`, `variation`, `regulatory`, `exon`; optional `biotype` filter
+- `max_results` caps the list (default `100`, `0` uncapped) while `totalCount` reports the true count; `assemblyName` names the coordinates' assembly, and exon rows carry `parentId` and `rank`. Errors: `invalid_region`, `invalid_species`
 
 ---
 
 ### `ensembl_predict_variant` <sub>tool</sub>
 
-- `variant` accepts HGVS (transcript-relative or genomic), region+allele (`chr:start:end:strand/allele`), or a dbSNP rsID
-- `max_transcript_consequences` (default `10`) and `max_pubmed_ids_per_variant` (default `10`) cap large VEP results; set either to `0` for the full set, or `include_all_colocated_pubmed: true` for uncapped PubMed IDs
-- Returns most severe consequence term, per-transcript impact (HIGH/MODERATE/LOW/MODIFIER), and colocated known variants with clinical significance
-- Totals (`transcriptConsequencesTotal`, `pubmedTotal`) are always reported even when capped
-- Errors: `invalid_notation`, `not_found`
+- `variant` as HGVS (transcript-relative or genomic), region+allele (`chr:start:end:strand/allele`), or a dbSNP rsID
+- Returns the most severe consequence, per-transcript impact (HIGH/MODERATE/LOW/MODIFIER), and colocated known variants with clinical significance. Errors: `invalid_notation`, `not_found`
+- `max_transcript_consequences` and `max_pubmed_ids_per_variant` (default `10` each, `0` uncapped; `include_all_colocated_pubmed` lifts the PubMed cap) bound the result, while `transcriptConsequencesTotal` and `pubmedTotal` report the full counts
 
 ---
 
 ### `ensembl_get_homology` <sub>tool</sub>
 
-- Exactly one of `symbol` (+ `species`, default `homo_sapiens`) or `id`; optional `target_species` filter
-- `type`: `orthologues` (default), `paralogues`, or `all`
-- `max_results` caps the homolog list (default `25`, `0` uncapped); `totalCount` always reports the true count available
-- Errors: `not_found`, `no_input`, `conflicting_input`
+- Exactly one of `symbol` (+ `species`, default `homo_sapiens`) or `id`; `type` is `orthologues` (default), `paralogues`, or `all`; optional `target_species` filter
+- `max_results` caps the list (default `25`, `0` uncapped) while `totalCount` reports the true count. Errors: `not_found`, `no_input`, `conflicting_input`
 
 ---
 
 ### `ensembl_get_xrefs` <sub>tool</sub>
 
 - `id` (`ENSG…`/`ENST…`) required; optional `dbname` filter (e.g. `HGNC`, `Uniprot_gn`, `EntrezGene`, `MIM_GENE`, `RefSeq_mRNA`, `Reactome`, `GO`)
-- Uses the `xrefs/id` endpoint, returning the full cross-reference set (56+ entries for well-annotated genes like BRCA2)
-- Errors: `not_found`
+- Returns the full cross-reference set (56+ entries for a well-annotated gene such as BRCA2). Errors: `not_found`
 
 ---
 
 ### `ensembl://gene/{id}` <sub>resource</sub>
 
-- Returns location, biotype, description, and transcript list for a gene stable ID (`ENSG…`); version suffix optional
-- Errors: `not_found`
+- `id` is a gene stable ID (`ENSG…`); version suffix optional
+- Returns location, biotype, description, and transcript list. Errors: `not_found`
 
 ---
 
 ### `ensembl://transcript/{id}` <sub>resource</sub>
 
-- Returns parent gene, location, biotype, canonical flag, and length for a transcript stable ID (`ENST…`); version suffix optional
-- Errors: `not_found`
+- `id` is a transcript stable ID (`ENST…`); version suffix optional
+- Returns parent gene, location, biotype, canonical flag, and length. Errors: `not_found`
 
 ---
 
@@ -154,6 +137,7 @@ All resource data is also reachable via the `ensembl_list_species` tool, which a
 ### `ensembl://species/{division}` <sub>resource</sub>
 
 - `division` required: `EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, or `EnsemblProtists`
+- Returns that division's species — internal name, display name, assembly, taxon ID, and division
 
 ---
 
@@ -306,6 +290,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth` | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.) | `info` |
 | `LOGS_DIR` | Directory for log files (Node.js only) | `<project-root>/logs` |
+| `LOG_TOOL_FAILURE_PAYLOADS` | Log each failed tool call's arguments and result, redacted by key name and capped at `LOG_TOOL_FAILURE_PAYLOAD_MAX_BYTES` (default `16384`). A secret inside a free-form value is not redacted. | `false` |
 | `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
 
 See [`.env.example`](./.env.example) for the full list of optional overrides.
