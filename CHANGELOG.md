@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-10-13 · ⚠️ Breaking
+
+Pages ensembl_list_species and caps the species resources at 50, resolves gene symbols through Ensembl aliases with typed batch results, adds one region grammar to ensembl_get_sequence and ensembl_query_region, and classifies Ensembl error envelopes instead of reporting outages as not found.
+
 ## [0.5.1](changelog/0.5.x/0.5.1.md) — 2026-10-08
 
 Adopts mcp-ts-core 0.13.14: tool errors carry a request ID and their declared recovery hint with no server stack or request context in error data, numeric and boolean strings, a lone string for a list, and null optional arguments are repaired instead of rejected, and the Docker image installs dependencies on the build platform.
