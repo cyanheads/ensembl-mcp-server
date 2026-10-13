@@ -22,7 +22,8 @@ export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
       .default('homo_sapiens')
       .describe(
         'Species in Ensembl internal format (e.g. homo_sapiens, mus_musculus). ' +
-          'Default is homo_sapiens. Use ensembl_list_species to discover valid values.',
+          'Default is homo_sapiens. Use ensembl_list_species with nameContains (e.g. "mouse") to ' +
+          'find a valid value.',
       ),
   }),
   generate: (args) => [
@@ -36,7 +37,12 @@ export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
           `1. **Resolve the gene** — call \`ensembl_lookup_gene\` with symbol="${args.gene_symbol}" ` +
           `and species="${args.species}", setting expand_transcripts=true. ` +
           `Record the stable ID (ENSG…), genomic coordinates (chr:start-end:strand:assembly), ` +
-          `biotype, and the canonical transcript ID (ENST…).\n\n` +
+          `biotype, and the canonical transcript ID (ENST…). If the symbol is a synonym, the gene ` +
+          `carries matchedAlias and displayName is its current name. If the result is ambiguous ` +
+          `instead of gene, the symbol names several genes: pick the candidate that fits the ` +
+          `research question by description and location, call \`ensembl_lookup_gene\` again with ` +
+          `its id and expand_transcripts=true, and use that stable ID wherever a later step ` +
+          `names the symbol.\n\n` +
           `2. **Fetch the protein sequence** — call \`ensembl_get_sequence\` with the canonical ` +
           `transcript ID from step 1 and type="protein". Record the amino acid sequence and its length. ` +
           `A protein longer than 10,000 residues comes back as a first window (truncated=true); length ` +

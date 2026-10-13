@@ -1,11 +1,20 @@
 /**
  * @fileoverview Tool to resolve genes by symbol + species or by Ensembl stable ID.
+ * A symbol that matches no current gene name falls back to Ensembl's external
+ * names (synonyms, former symbols), which can resolve to one gene or several.
  * @module mcp-server/tools/definitions/lookup-gene
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
+import type { GeneRecord } from '@/services/ensembl/types.js';
+
+/** Ensembl's answer when `/lookup/symbol` has no gene with that current name. */
+const DIRECT_MISS = /No valid lookup found for symbol/i;
+
+/** Ensembl's answer for a species string it does not recognize. */
+const UNKNOWN_SPECIES = /Can not find internal name for species/i;
 
 const TranscriptSummarySchema = z.object({
   id: z.string().describe('Ensembl transcript stable ID (ENST…).'),
@@ -21,7 +30,7 @@ const TranscriptSummarySchema = z.object({
   lengthInBp: z.number().optional().describe('Transcript length in base pairs.'),
 });
 
-const GeneResultSchema = z.object({
+const GeneRecordSchema = z.object({
   id: z
     .string()
     .describe('Ensembl gene stable ID (ENSG…). Use this as input to other Ensembl tools.'),
@@ -49,27 +58,65 @@ const GeneResultSchema = z.object({
     .describe('Transcript list. Present only when expand_transcripts is true.'),
 });
 
-const BatchResultSchema = z.object({
-  // passthrough() — fields rendered via format()'s renderGene helper, not individually listed.
-  succeeded: z
-    .array(
-      z
-        .object({})
-        .passthrough()
-        .describe('A resolved gene record with the same shape as the gene output field.'),
-    )
-    .describe('Gene records for IDs/symbols that resolved successfully. Same shape as gene.'),
-  failed: z
-    .array(
-      z
-        .object({})
-        .passthrough()
-        .describe(
-          'A failed lookup entry with query (the submitted ID or symbol) and error (reason string) fields.',
-        ),
-    )
-    .describe('IDs/symbols that could not be resolved, with per-item query and error fields.'),
+const GeneResultSchema = GeneRecordSchema.extend({
+  matchedAlias: z
+    .string()
+    .optional()
+    .describe(
+      'The submitted symbol, present when it matched a synonym or former symbol rather than the ' +
+        'current gene name; displayName holds the current name.',
+    ),
 });
+
+const CandidatesSchema = z
+  .array(GeneRecordSchema.describe('A gene the symbol is a synonym or former symbol of.'))
+  .describe('Every gene the symbol maps to. Retry with id set to the intended one.');
+
+const SucceededItemSchema = GeneResultSchema.extend({
+  query: z.string().describe('The submitted ID or symbol this record resolved from.'),
+});
+
+const FailedItemSchema = z.object({
+  query: z.string().describe('The submitted ID or symbol.'),
+  reason: z
+    .enum(['not_found', 'ambiguous', 'unavailable'])
+    .describe(
+      'not_found: nothing matched. ambiguous: the symbol is a synonym of several genes, ' +
+        'listed in candidates. unavailable: Ensembl did not answer the synonym lookup for ' +
+        'this symbol after retries, so whether it matches is unknown — retry it.',
+    ),
+  error: z.string().describe('What went wrong for this item.'),
+  recovery: z.string().describe('The next step for this item.'),
+  candidates: CandidatesSchema.optional().describe(
+    'Every gene the symbol maps to. Present only when reason is ambiguous.',
+  ),
+});
+
+const BatchResultSchema = z.object({
+  succeeded: z
+    .array(SucceededItemSchema.describe('A resolved gene record carrying its submitted query.'))
+    .describe('Records for IDs/symbols that resolved to one gene, in input order.'),
+  failed: z
+    .array(FailedItemSchema.describe('One unresolved ID or symbol.'))
+    .describe('IDs/symbols that did not resolve to one gene, in input order.'),
+});
+
+type SucceededItem = z.infer<typeof SucceededItemSchema>;
+type FailedItem = z.infer<typeof FailedItemSchema>;
+
+/** Next step for a batch symbol whose synonym lookup Ensembl left unanswered. */
+const UNAVAILABLE_RECOVERY =
+  'Ensembl did not answer the synonym lookup for this symbol. Retry the call, or look the ' +
+  'symbol up alone with the symbol field.';
+
+/** Retry guidance for a symbol shared by several genes, naming each candidate's ID. */
+function ambiguityGuidance(symbol: string, species: string, candidates: GeneRecord[]): string {
+  const listed = candidates.map((g) => `${g.displayName ?? g.id} (${g.id})`).join(', ');
+  return (
+    `"${symbol}" is a synonym or former symbol of ${candidates.length} genes in ${species}: ` +
+    `${listed}. Pick the intended gene and retry ensembl_lookup_gene with id set to its stable ID.`
+  );
+}
 
 export const ensemblLookupGene = tool('ensembl_lookup_gene', {
   title: 'Lookup Gene',
@@ -77,10 +124,13 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
     'Resolve a gene by symbol + species (or by stable ID) to its Ensembl ID, genomic location ' +
     '(chr:start-end:strand), biotype, description, and transcript list. Entry point for most workflows — ' +
     'the stable ID and coordinates returned here are inputs to other tools. Accepts both symbol lookup ' +
-    '(BRCA2 + homo_sapiens) and direct ID lookup (ENSG00000139618). Supports batch lookup of up to 20 ' +
-    'IDs or symbols in one call via the ids or symbols field. Provide exactly one of symbol, id, ids, ' +
-    'or symbols. For symbol lookups species defaults to homo_sapiens (override for other organisms); ' +
-    'for ID lookups species is not needed. Use ensembl_list_species to discover valid species names.',
+    '(BRCA2 + homo_sapiens) and direct ID lookup (ENSG00000139618). A symbol that is not a current gene ' +
+    'name is matched against synonyms and former symbols (HER2 → ERBB2), reported as matchedAlias; when ' +
+    'it maps to several genes the result is ambiguous, listing the candidates to retry by id. Supports ' +
+    'batch lookup of up to 20 IDs or symbols in one call via the ids or symbols field. Provide exactly ' +
+    'one of symbol, id, ids, or symbols. For symbol lookups species defaults to homo_sapiens (override ' +
+    'for other organisms); for ID lookups species is not needed. Use ensembl_list_species with ' +
+    'nameContains (a genus or common name) to find valid species names.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     symbol: z
@@ -89,13 +139,15 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       .describe(
         'Gene symbol to look up (e.g. BRCA2, TP53, EGFR). ' +
           'Species defaults to homo_sapiens; set species for other organisms. ' +
-          'Case-insensitive in most species.',
+          'Case-insensitive in most species. A synonym or former symbol (HER2, TB1) resolves too; ' +
+          'one shared by several genes returns ambiguous with the candidates instead of gene.',
       ),
     id: z
       .string()
       .optional()
       .describe(
-        'Ensembl stable gene ID (e.g. ENSG00000139618 or ENSG00000139618.7 with version). ' +
+        'Ensembl stable gene ID (e.g. ENSG00000139618). A version suffix on an ENS… ID ' +
+          '(ENSG00000139618.19) is dropped before the lookup, which returns the current version. ' +
           'Species is not required for ID lookup.',
       ),
     species: z
@@ -105,7 +157,7 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
         'Species in Ensembl internal format: lowercase scientific name with underscores ' +
           '(e.g. homo_sapiens, mus_musculus, danio_rerio). ' +
           'Optional for symbol lookups — defaults to homo_sapiens; set it for other organisms. ' +
-          'Use ensembl_list_species to discover valid values.',
+          'Use ensembl_list_species with nameContains (a genus or common name) to find valid values.',
       ),
     ids: z
       .array(
@@ -118,8 +170,10 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       .max(20)
       .optional()
       .describe(
-        'Batch lookup: up to 20 Ensembl stable IDs (ENSG…, ENST…). ' +
-          'Returns a succeeded/failed split. Provide exactly one of symbol, id, ids, or symbols.',
+        'Batch lookup: up to 20 Ensembl stable IDs (ENSG…, ENST…). A version suffix on an ENS… ' +
+          'ID is dropped before the lookup. Returns a succeeded/failed split; each item carries ' +
+          'its query — the ID as submitted, version included — and each failed item a reason and ' +
+          'recovery. Provide exactly one of symbol, id, ids, or symbols.',
       ),
     symbols: z
       .array(
@@ -134,7 +188,9 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       .describe(
         'Batch lookup: up to 20 gene symbols. ' +
           'Species defaults to homo_sapiens; set species for other organisms. ' +
-          'Returns a succeeded/failed split. Provide exactly one of symbol, id, ids, or symbols.',
+          'Returns a succeeded/failed split; each item carries its submitted query. Synonyms and ' +
+          'former symbols resolve with matchedAlias; one shared by several genes fails with ' +
+          'reason ambiguous and its candidates. Provide exactly one of symbol, id, ids, or symbols.',
       ),
     expand_transcripts: z
       .boolean()
@@ -147,8 +203,19 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
   }),
   output: z.object({
     gene: GeneResultSchema.optional().describe(
-      'Single gene record. Present for symbol or id lookups.',
+      'Single gene record. Present for an id lookup, or a symbol lookup that resolved to one gene.',
     ),
+    ambiguous: z
+      .object({
+        query: z.string().describe('The submitted symbol.'),
+        candidates: CandidatesSchema,
+        guidance: z.string().describe('How to pick a candidate and retry by id.'),
+      })
+      .optional()
+      .describe(
+        'Present instead of gene when a symbol is not a current gene name and is a synonym or ' +
+          'former symbol of several genes.',
+      ),
     batch: BatchResultSchema.optional().describe(
       'Batch results. Present for ids or symbols lookups.',
     ),
@@ -160,16 +227,18 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       code: JsonRpcErrorCode.NotFound,
       when: 'The gene symbol or stable ID was not found in Ensembl.',
       recovery:
-        'Verify the symbol spelling or ID format. Use ensembl_list_species to confirm the species name, ' +
-        'then retry. Stable IDs are versioned (ENSG00000139618.7) — omitting the version resolves to current.',
+        'Verify the symbol spelling or ID format. Confirm the species name with ensembl_list_species ' +
+        'and nameContains (a genus or common name), then retry. A version suffix is already dropped ' +
+        'from an ENS… ID, so an ID still not found is mistyped or retired.',
     },
     {
       reason: 'invalid_species',
       code: JsonRpcErrorCode.ValidationError,
       when: 'The species string was not recognized by Ensembl.',
       recovery:
-        'Call ensembl_list_species to discover valid species names. ' +
-        'Species must be in lowercase_underscore format (homo_sapiens, not Human or Homo Sapiens).',
+        'Find the internal name with ensembl_list_species, setting nameContains to a genus or ' +
+        'common name (e.g. mouse) and division for non-vertebrates. Names are lowercase_underscore ' +
+        '(homo_sapiens, not Human).',
     },
     {
       reason: 'no_input',
@@ -206,45 +275,110 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       throw ctx.fail('conflicting_input', 'Provide exactly one of: symbol, id, ids, or symbols.');
     }
 
+    const notFoundRecovery = ctx.recoveryFor('not_found').recovery.hint;
+
     // --- Batch by IDs ---
     if (input.ids?.length) {
-      const map = await service.lookupGenesBatch(input.ids, input.expand_transcripts, ctx);
-      const succeeded = Array.from(map.values());
-      const resolvedIds = new Set(map.keys());
-      const failed = input.ids
-        .filter((id) => !resolvedIds.has(id))
-        .map((id) => ({ query: id, error: `ID ${id} not found in Ensembl.` }));
+      const ids = [...new Set(input.ids)];
+      const map = await service.lookupGenesBatch(ids, input.expand_transcripts, ctx);
+      const succeeded: SucceededItem[] = [];
+      const failed: FailedItem[] = [];
+      for (const id of ids) {
+        const gene = map.get(id);
+        if (gene) {
+          succeeded.push({ query: id, ...gene });
+        } else {
+          failed.push({
+            query: id,
+            reason: 'not_found',
+            error: `ID ${id} not found in Ensembl.`,
+            recovery: notFoundRecovery,
+          });
+        }
+      }
       return { batch: { succeeded, failed } };
     }
 
     // --- Batch by symbols ---
     if (input.symbols?.length) {
       const speciesStr = input.species?.trim() || 'homo_sapiens';
-      const map = await service.lookupSymbolsBatch(
-        input.symbols,
+      const symbols = [...new Set(input.symbols)];
+      const direct = await service.lookupSymbolsBatch(
+        symbols,
         speciesStr,
         input.expand_transcripts,
         ctx,
       );
-      const succeeded = Array.from(map.values());
-      const resolvedSymbols = new Set(map.keys());
-      const failed = input.symbols
-        .filter((s) => !resolvedSymbols.has(s))
-        .map((s) => ({
-          query: s,
-          error: `Symbol ${s} not found in Ensembl for species ${speciesStr}.`,
-        }));
+      const misses = symbols.filter((s) => !direct.has(s));
+      // Ensembl answers an unknown species with the same {} as an all-miss batch, so when
+      // nothing resolved, the first miss's xref request runs alone as the species check.
+      const aliases =
+        misses.length > 0
+          ? await service
+              .resolveSymbolAliases(
+                misses,
+                speciesStr,
+                input.expand_transcripts,
+                ctx,
+                direct.size === 0,
+              )
+              .catch((err: unknown) => {
+                if (UNKNOWN_SPECIES.test(err instanceof Error ? err.message : String(err))) {
+                  throw ctx.fail(
+                    'invalid_species',
+                    `Species "${speciesStr}" not recognized by Ensembl.`,
+                  );
+                }
+                throw err;
+              })
+          : undefined;
+
+      const succeeded: SucceededItem[] = [];
+      const failed: FailedItem[] = [];
+      for (const symbol of symbols) {
+        const gene = direct.get(symbol);
+        const alias = aliases?.get(symbol);
+        if (gene) {
+          succeeded.push({ query: symbol, ...gene });
+        } else if (alias?.kind === 'gene') {
+          succeeded.push({ query: symbol, ...alias.gene, matchedAlias: symbol });
+        } else if (alias?.kind === 'ambiguous') {
+          failed.push({
+            query: symbol,
+            reason: 'ambiguous',
+            error: `Symbol ${symbol} maps to ${alias.candidates.length} genes in ${speciesStr}.`,
+            recovery: ambiguityGuidance(symbol, speciesStr, alias.candidates),
+            candidates: alias.candidates,
+          });
+        } else if (alias?.kind === 'unavailable') {
+          failed.push({
+            query: symbol,
+            reason: 'unavailable',
+            error: `Synonym lookup for ${symbol} got no answer from Ensembl: ${alias.error.message}`,
+            recovery: UNAVAILABLE_RECOVERY,
+          });
+        } else {
+          failed.push({
+            query: symbol,
+            reason: 'not_found',
+            error: `Symbol ${symbol} not found in Ensembl for species ${speciesStr}.`,
+            recovery: notFoundRecovery,
+          });
+        }
+      }
       return { batch: { succeeded, failed } };
     }
 
     // --- Single symbol ---
     if (input.symbol?.trim()) {
+      const symbol = input.symbol.trim();
       const speciesStr = input.species?.trim() || 'homo_sapiens';
       const gene = await service
-        .lookupGene(input.symbol.trim(), speciesStr, input.expand_transcripts, ctx)
+        .lookupGene(symbol, speciesStr, input.expand_transcripts, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
-          if (/not found|no stable id|no results|no valid lookup/i.test(msg)) {
+          if (DIRECT_MISS.test(msg)) return;
+          if (/not found|no stable id|no results/i.test(msg)) {
             throw ctx.fail(
               'not_found',
               `Gene symbol "${input.symbol}" not found in ${speciesStr}.`,
@@ -255,7 +389,24 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
           }
           throw err;
         });
-      return { gene };
+      if (gene) return { gene };
+
+      const alias = (
+        await service.resolveSymbolAliases([symbol], speciesStr, input.expand_transcripts, ctx)
+      ).get(symbol);
+      // Alone, an unanswered lookup is the whole call's answer, so it fails as itself.
+      if (alias?.kind === 'unavailable') throw alias.error;
+      if (alias?.kind === 'gene') return { gene: { ...alias.gene, matchedAlias: symbol } };
+      if (alias?.kind === 'ambiguous') {
+        return {
+          ambiguous: {
+            query: symbol,
+            candidates: alias.candidates,
+            guidance: ambiguityGuidance(symbol, speciesStr, alias.candidates),
+          },
+        };
+      }
+      throw ctx.fail('not_found', `Gene symbol "${input.symbol}" not found in ${speciesStr}.`);
     }
 
     // --- Single ID ---
@@ -278,10 +429,12 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
   format: (result) => {
     const lines: string[] = [];
 
-    type GeneItem = NonNullable<(typeof result)['gene']>;
-    const renderGene = (g: GeneItem) => {
-      lines.push(`## ${g.displayName ?? g.id}`);
+    type GeneItem = NonNullable<(typeof result)['gene']> & { query?: string };
+    const renderGene = (g: GeneItem, heading = '##') => {
+      lines.push(`${heading} ${g.displayName ?? g.id}`);
       lines.push(`**ID:** ${g.id}`);
+      if (g.query) lines.push(`**Query:** ${g.query}`);
+      if (g.matchedAlias) lines.push(`**Matched alias:** ${g.matchedAlias}`);
       if (g.species) lines.push(`**Species:** ${g.species}`);
       if (g.biotype) lines.push(`**Biotype:** ${g.biotype}`);
       if (g.description) lines.push(`**Description:** ${g.description}`);
@@ -309,18 +462,37 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
 
     if (result.gene) {
       renderGene(result.gene);
-    } else if (result.batch) {
+    }
+    if (result.ambiguous) {
+      const { query, candidates, guidance } = result.ambiguous;
+      lines.push(`## Ambiguous symbol: ${query}`);
+      lines.push(guidance);
+      for (const c of candidates) {
+        lines.push('');
+        renderGene(c, '###');
+      }
+    }
+    if (result.batch) {
       const { succeeded, failed } = result.batch;
       lines.push(`## Batch Lookup Results`);
       lines.push(`**Succeeded:** ${succeeded.length} | **Failed:** ${failed.length}\n`);
       for (const g of succeeded) {
-        renderGene(g as GeneItem);
+        renderGene(g);
         lines.push('');
       }
       if (failed.length > 0) {
         lines.push('### Failed lookups');
         for (const f of failed) {
-          lines.push(`- **${f.query}:** ${f.error}`);
+          lines.push(`- **${f.query}** (${f.reason}): ${f.error}`);
+          for (const c of f.candidates ?? []) {
+            lines.push('');
+            renderGene(c, '####');
+          }
+          if (f.candidates?.length) lines.push('');
+        }
+        lines.push('\n### Recovery');
+        for (const recovery of new Set(failed.map((f) => f.recovery))) {
+          lines.push(`- ${recovery}`);
         }
       }
     }

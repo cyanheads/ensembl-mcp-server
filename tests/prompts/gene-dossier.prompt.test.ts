@@ -89,6 +89,21 @@ describe('ensemblGeneDossierPrompt', () => {
     expect(text.slice(text.indexOf('7. **'))).toContain('totalCount');
   });
 
+  it('step 1 continues from an ambiguous lookup by candidate id (issue #20)', async () => {
+    const args = ensemblGeneDossierPrompt.args!.parse({ gene_symbol: 'MDR1' });
+    const text = (
+      (await ensemblGeneDossierPrompt.generate(args))[0]!.content as {
+        type: string;
+        text: string;
+      }
+    ).text;
+    const step1 = text.slice(text.indexOf('1. **'), text.indexOf('2. **'));
+    expect(step1).toContain('ambiguous');
+    expect(step1).toContain('matchedAlias');
+    expect(step1).toContain('again with its id');
+    expect(step1).toContain('use that stable ID wherever a later step names the symbol');
+  });
+
   it('message role is "user"', async () => {
     const args = ensemblGeneDossierPrompt.args!.parse({ gene_symbol: 'BRCA2' });
     const messages = await ensemblGeneDossierPrompt.generate(args);

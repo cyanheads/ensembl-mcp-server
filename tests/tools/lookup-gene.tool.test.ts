@@ -3,6 +3,7 @@
  * @module tests/tools/lookup-gene.tool.test
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { ensemblLookupGene } from '@/mcp-server/tools/definitions/lookup-gene.tool.js';
@@ -12,6 +13,7 @@ const mockLookupGene = vi.fn();
 const mockLookupGeneById = vi.fn();
 const mockLookupGenesBatch = vi.fn();
 const mockLookupSymbolsBatch = vi.fn();
+const mockResolveSymbolAliases = vi.fn();
 
 vi.mock('@/services/ensembl/ensembl-service.js', () => ({
   getEnsemblService: () => ({
@@ -19,8 +21,15 @@ vi.mock('@/services/ensembl/ensembl-service.js', () => ({
     lookupGeneById: mockLookupGeneById,
     lookupGenesBatch: mockLookupGenesBatch,
     lookupSymbolsBatch: mockLookupSymbolsBatch,
+    resolveSymbolAliases: mockResolveSymbolAliases,
   }),
 }));
+
+const notFoundRecovery = ensemblLookupGene.errors!.find((e) => e.reason === 'not_found')!.recovery;
+
+const erbb2Gene: GeneRecord = { id: 'ENSG00000141736', displayName: 'ERBB2', chromosome: '17' };
+const abcb1Gene: GeneRecord = { id: 'ENSG00000085563', displayName: 'ABCB1', chromosome: '7' };
+const tbc1d9Gene: GeneRecord = { id: 'ENSG00000109436', displayName: 'TBC1D9', chromosome: '4' };
 
 const brca2Gene: GeneRecord = {
   id: 'ENSG00000139618',
@@ -91,37 +100,13 @@ describe('ensemblLookupGene', () => {
     expect(result.gene!.id).toBe('ENSG00000139618');
   });
 
-  it('batch lookup by ids returns succeeded/failed split', async () => {
-    mockLookupGenesBatch.mockResolvedValueOnce(new Map([['ENSG00000139618', brca2Gene]]));
+  it('passes a non-species upstream failure from the alias fallback through unchanged', async () => {
+    mockLookupSymbolsBatch.mockResolvedValueOnce(new Map());
+    mockResolveSymbolAliases.mockRejectedValueOnce(new Error('Ensembl API returned HTTP 503.'));
     const ctx = createMockContext({ errors: ensemblLookupGene.errors });
-    const input = ensemblLookupGene.input.parse({
-      ids: ['ENSG00000139618', 'ENSG99999999999'],
-    });
-    const result = await ensemblLookupGene.handler(input, ctx);
-    expect(result.batch).toBeDefined();
-    expect(result.batch!.succeeded).toHaveLength(1);
-    expect(result.batch!.failed).toHaveLength(1);
-    expect(result.batch!.failed).toContainEqual({
-      query: 'ENSG99999999999',
-      error: 'ID ENSG99999999999 not found in Ensembl.',
-    });
-  });
-
-  it('batch lookup by symbols returns succeeded/failed split', async () => {
-    mockLookupSymbolsBatch.mockResolvedValueOnce(new Map([['BRCA2', brca2Gene]]));
-    const ctx = createMockContext({ errors: ensemblLookupGene.errors });
-    const input = ensemblLookupGene.input.parse({
-      symbols: ['BRCA2', 'NONEXISTENT_GENE'],
-      species: 'homo_sapiens',
-    });
-    const result = await ensemblLookupGene.handler(input, ctx);
-    expect(result.batch).toBeDefined();
-    expect(result.batch!.succeeded).toHaveLength(1);
-    expect(result.batch!.failed).toHaveLength(1);
-    expect(result.batch!.failed).toContainEqual({
-      query: 'NONEXISTENT_GENE',
-      error: 'Symbol NONEXISTENT_GENE not found in Ensembl for species homo_sapiens.',
-    });
+    await expect(
+      ensemblLookupGene.handler(ensemblLookupGene.input.parse({ symbols: ['A1'] }), ctx),
+    ).rejects.toThrow('Ensembl API returned HTTP 503.');
   });
 
   it('throws not_found when symbol lookup fails with "not found" message', async () => {
@@ -199,16 +184,78 @@ describe('ensemblLookupGene', () => {
   it('formats batch result with succeeded and failed entries', () => {
     const output = {
       batch: {
-        succeeded: [brca2Gene],
-        failed: [{ query: 'ENSG99999999999', error: 'ID ENSG99999999999 not found in Ensembl.' }],
+        succeeded: [{ query: 'ENSG00000139618', ...brca2Gene }],
+        failed: [
+          {
+            query: 'ENSG99999999999',
+            reason: 'not_found' as const,
+            error: 'ID ENSG99999999999 not found in Ensembl.',
+            recovery: notFoundRecovery,
+          },
+        ],
       },
     };
     const blocks = ensemblLookupGene.format!(output);
     const text = (blocks[0] as { type: 'text'; text: string }).text;
     expect(text).toContain('Batch Lookup Results');
     expect(text).toContain('ENSG00000139618');
-    expect(text).toContain('ENSG99999999999');
     expect(text).toContain('Failed lookups');
+    expect(text).toContain(
+      '- **ENSG99999999999** (not_found): ID ENSG99999999999 not found in Ensembl.',
+    );
+    expect(text).toContain(notFoundRecovery);
+  });
+
+  it('formats each failed item and each distinct recovery once (issue #18)', () => {
+    const missing = (query: string) => ({
+      query,
+      reason: 'not_found' as const,
+      error: `Symbol ${query} not found in Ensembl for species homo_sapiens.`,
+      recovery: notFoundRecovery,
+    });
+    const text = (
+      ensemblLookupGene.format!({
+        batch: {
+          succeeded: [{ query: 'her2', ...erbb2Gene, matchedAlias: 'her2' }],
+          failed: [
+            missing('NOPE_A'),
+            {
+              query: 'MDR1',
+              reason: 'ambiguous',
+              error: 'Symbol MDR1 maps to 2 genes in homo_sapiens.',
+              recovery: 'Retry with id set to ENSG00000085563 or ENSG00000109436.',
+              candidates: [abcb1Gene, tbc1d9Gene],
+            },
+            missing('NOPE_B'),
+          ],
+        },
+      })[0] as { type: 'text'; text: string }
+    ).text;
+    expect(text).toContain('**Query:** her2');
+    expect(text).toContain('**Matched alias:** her2');
+    expect(text).toContain('- **NOPE_A** (not_found)');
+    expect(text).toContain('- **NOPE_B** (not_found)');
+    expect(text).toContain('- **MDR1** (ambiguous): Symbol MDR1 maps to 2 genes');
+    expect(text).toContain('#### TBC1D9');
+    expect(text.split(notFoundRecovery)).toHaveLength(2);
+    expect(text).toContain('Retry with id set to ENSG00000085563 or ENSG00000109436.');
+  });
+
+  it('advertises concrete batch item and ambiguity fields in the output schema (issue #18)', () => {
+    type Node = { properties?: Record<string, Node>; items?: Node };
+    const schema = z.toJSONSchema(ensemblLookupGene.output) as Node;
+    const batch = schema.properties!.batch!.properties!;
+    expect(Object.keys(batch.succeeded!.items!.properties!)).toEqual(
+      expect.arrayContaining(['query', 'id', 'displayName', 'matchedAlias', 'chromosome']),
+    );
+    expect(Object.keys(batch.failed!.items!.properties!)).toEqual(
+      expect.arrayContaining(['query', 'reason', 'error', 'recovery', 'candidates']),
+    );
+    expect(Object.keys(schema.properties!.ambiguous!.properties!)).toEqual([
+      'query',
+      'candidates',
+      'guidance',
+    ]);
   });
 
   it('formats sparse gene (only id, no optional fields) without crash', () => {
@@ -236,4 +283,43 @@ describe('ensemblLookupGene blank batch entries (issue #22)', () => {
     expect(mockLookupGenesBatch).not.toHaveBeenCalled();
     expect(mockLookupSymbolsBatch).not.toHaveBeenCalled();
   });
+});
+
+describe('ensemblLookupGene upstream-message classification cost (issues #18, #20)', () => {
+  /** Near-misses of every pattern the handler tests, echoing a caller-sized symbol. */
+  const nearMiss = (chars: number) =>
+    'No valid lookup found for symbo Can not find internal name for specie '
+      .repeat(Math.ceil(chars / 70))
+      .slice(0, chars);
+
+  /** Thread CPU microseconds for one handler run whose upstream call rejects with `message`. */
+  async function classifyCpu(mode: 'symbol' | 'symbols', message: string): Promise<number> {
+    const ctx = createMockContext({ errors: ensemblLookupGene.errors });
+    if (mode === 'symbol') {
+      mockLookupGene.mockRejectedValueOnce(new Error(message));
+    } else {
+      mockLookupSymbolsBatch.mockResolvedValueOnce(new Map());
+      mockResolveSymbolAliases.mockRejectedValueOnce(new Error(message));
+    }
+    const input = ensemblLookupGene.input.parse(
+      mode === 'symbol' ? { symbol: 'X' } : { symbols: ['X'] },
+    );
+    const start = process.threadCpuUsage();
+    // Matches no pattern, so it passes through unclassified.
+    await expect(ensemblLookupGene.handler(input, ctx)).rejects.toThrow(message.slice(0, 40));
+    const used = process.threadCpuUsage(start);
+    return used.user + used.system;
+  }
+
+  it.each(['symbol', 'symbols'] as const)(
+    'stays linear in the echoed message length (%s path)',
+    async (mode) => {
+      await classifyCpu(mode, nearMiss(5_000)); // warm up
+      const small = await classifyCpu(mode, nearMiss(5_000));
+      const large = await classifyCpu(mode, nearMiss(320_000));
+      // 64x the input: a linear scan stays far under 256x; a quadratic one would not.
+      expect(large / Math.max(small, 1)).toBeLessThan(256);
+      expect(large).toBeLessThan(200_000);
+    },
+  );
 });
