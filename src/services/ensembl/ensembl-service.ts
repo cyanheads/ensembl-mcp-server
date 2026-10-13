@@ -6,31 +6,169 @@
 
 import type { Context } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
-import { notFound, serviceUnavailable, validationError } from '@cyanheads/mcp-ts-core/errors';
+import {
+  JsonRpcErrorCode,
+  McpError,
+  notFound,
+  serviceUnavailable,
+  timeout,
+  validationError,
+} from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
-import { requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import { type RetryAttempt, requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import type {
+  AliasResolution,
   EnsemblErrorEnvelope,
   GeneRecord,
   HomologyEntry,
   HomologyResult,
+  MitochondrionAliasCheck,
   OverlapFeature,
   RawAssemblyInfo,
   RawGeneRecord,
   RawHomologyResponse,
   RawOverlapFeature,
+  RawRegionInfo,
   RawSequenceRecord,
   RawSpeciesResponse,
   RawTranscriptRecord,
   RawVepRecord,
   RawXrefEntry,
+  RawXrefSymbolEntry,
   SequenceRecord,
   SpeciesInfo,
   TranscriptRecord,
   VepRecord,
   XrefEntry,
 } from './types.js';
+
+// --- Upstream request bounds ---
+
+/**
+ * Bound on one Ensembl request attempt — response headers and the full body read
+ * together. Sized above the slowest successful response measured against
+ * rest.ensembl.org; docs/design.md records the measurements.
+ */
+export const ENSEMBL_ATTEMPT_TIMEOUT_MS = 180_000;
+
+/**
+ * Bound on one tool call as a whole: every upstream request it makes, with every
+ * attempt and retry backoff. Leaves room after one full-length attempt for a
+ * retry of a fast failure.
+ */
+export const ENSEMBL_CALL_DEADLINE_MS = 240_000;
+
+// --- Response classification ---
+
+/** Ensembl's error text when its REST server cannot reach the backing database. */
+const DATABASE_OUTAGE = /could not connect to database|DBI connect/i;
+
+/**
+ * The location Perl appends to an uncaught `die` ("… at /path/Module.pm line 121."):
+ * the request crashed inside Ensembl's own code rather than being rejected.
+ */
+const PERL_DIE_LOCATION = / at \/\S+ line \d+/;
+
+/** Ensembl's answer for a sequence-region name a species does not resolve. */
+const NO_SLICE = /^No slice found for location/i;
+
+// --- Names ---
+
+/**
+ * An Ensembl stable ID with a trailing version (ENSG00000139618.19). Ensembl's stable-ID
+ * endpoints answer a versioned ID as not found, even its current version, and
+ * `/homology/id` answers it with an empty list, so the version is dropped before every
+ * stable-ID request. A non-Ensembl ID (AT3G52430.1, whose suffix is part of the ID) never
+ * matches. Anchored, with the letter run, digit run, and suffix in disjoint classes, so
+ * matching is linear in the input.
+ */
+const VERSIONED_STABLE_ID = /^(ENS[A-Z]*\d{11})\.\d+$/i;
+
+/** The ID without its version when it is a versioned Ensembl stable ID; otherwise unchanged. */
+function unversioned(id: string): string {
+  return id.replace(VERSIONED_STABLE_ID, '$1');
+}
+
+/**
+ * A sequence-region name or synonym that names a mitochondrion: MT, Mt, Mito, MtDNA, M,
+ * chrM, mitochondrion_genome. Anchored literal alternatives, so linear in the input.
+ */
+const MITOCHONDRION_NAME = /^(?:(?:chr)?(?:m|mt|mito|mtdna)|mitochondri(?:on|al)(?:_genome)?)$/i;
+
+/**
+ * Turns an Ensembl response body into the parsed payload or a classified error.
+ * Ensembl answers every caught exception with an `{ error }` envelope, usually on
+ * HTTP 400 whether the cause was the request or its own backend, so the message
+ * decides first and the status only for messages no pattern recognizes. Input
+ * errors keep Ensembl's message unchanged: the tools map them by its text.
+ */
+function parseEnsemblBody<T>(status: number, text: string): T {
+  if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
+    throw serviceUnavailable(
+      'Ensembl API returned HTML instead of JSON — service may be degraded.',
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw serviceUnavailable(`Ensembl API returned unparseable response.`, { status });
+  }
+
+  if (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    'error' in parsed &&
+    typeof (parsed as EnsemblErrorEnvelope).error === 'string'
+  ) {
+    const msg = (parsed as EnsemblErrorEnvelope).error;
+    if (DATABASE_OUTAGE.test(msg)) {
+      // Ensembl's text carries its database DSN and server paths: it rides `cause`
+      // into the log, never the message or data a caller sees.
+      throw serviceUnavailable(
+        'Ensembl is temporarily unavailable: its REST server lost its database connection.',
+        {
+          status,
+          recovery: {
+            hint: 'Retry the call in a minute or two. This is an Ensembl outage, not a problem with the request.',
+          },
+        },
+        { cause: new Error(msg) },
+      );
+    }
+    if (PERL_DIE_LOCATION.test(msg)) {
+      // The text names Ensembl's server paths; like an outage's, it stays in the log.
+      throw serviceUnavailable(
+        'Ensembl hit an internal error answering this request.',
+        { status },
+        { cause: new Error(msg) },
+      );
+    }
+    if (/not found|not exist|does not exist|no stable id/i.test(msg)) {
+      throw notFound(msg);
+    }
+    if (/invalid|unrecognized|malformed|bad request/i.test(msg)) {
+      throw validationError(msg);
+    }
+    if (status === 404) throw notFound(msg);
+    if (status >= 500) {
+      throw serviceUnavailable(
+        `Ensembl API returned HTTP ${status}.`,
+        { status },
+        { cause: new Error(msg) },
+      );
+    }
+    throw validationError(msg);
+  }
+
+  if (status < 200 || status > 299) {
+    throw serviceUnavailable(`Ensembl API returned HTTP ${status}.`, { status });
+  }
+
+  return parsed as T;
+}
 
 // --- Normalizers ---
 
@@ -85,6 +223,7 @@ function normalizeSequence(raw: RawSequenceRecord, type: string): SequenceRecord
     type,
     seq: raw.seq,
     length: raw.seq.length,
+    ...(raw.molecule && { molecule: raw.molecule }),
     ...(raw.desc && { description: raw.desc }),
   };
 }
@@ -196,6 +335,14 @@ function normalizeSpecies(raw: RawSpeciesResponse): SpeciesInfo[] {
 
 // --- Service ---
 
+/** Most `/xrefs/symbol` requests in flight at once while resolving a batch's misses. */
+const XREF_CONCURRENCY = 4;
+
+interface RequestOptions {
+  body?: unknown;
+  method?: 'GET' | 'POST';
+}
+
 export class EnsemblService {
   private readonly baseUrl: string;
   /**
@@ -204,6 +351,23 @@ export class EnsemblService {
    * value is kept for the process lifetime; failed lookups are never stored.
    */
   private readonly defaultAssemblies = new Map<string, string>();
+  /**
+   * Reference top-level region names per species (chromosomes and unplaced
+   * scaffolds, never patch or haplotype regions), kept for the process lifetime
+   * on the same grounds as defaultAssemblies.
+   */
+  private readonly referenceRegions = new Map<string, Set<string>>();
+  /**
+   * Per species and `M`/`chrM` spelling, whether Ensembl resolves it to the
+   * mitochondrion, kept for the process lifetime on the same grounds.
+   */
+  private readonly mitochondrionAliases = new Map<string, boolean>();
+  /**
+   * When each tool call's first upstream request started, keyed by the call's
+   * Context: every later request of the call spends the same
+   * {@link ENSEMBL_CALL_DEADLINE_MS} budget.
+   */
+  private readonly callStarts = new WeakMap<Context, number>();
 
   constructor(_config: AppConfig, _storage: StorageService) {
     this.baseUrl = getServerConfig().baseUrl;
@@ -211,108 +375,116 @@ export class EnsemblService {
 
   // --- Core fetch ---
 
+  /**
+   * One request attempt. It aborts on the first of three clocks: its own
+   * {@link ENSEMBL_ATTEMPT_TIMEOUT_MS} timer, the call deadline, and the caller's
+   * cancellation — the last two arrive together on `attempt.signal`. The timer
+   * stays armed through the body read, so a response that sends its headers and
+   * then stalls is bounded too.
+   */
   private async fetchJson<T>(
     path: string,
     ctx: Context,
-    options?: {
-      method?: 'GET' | 'POST';
-      body?: unknown;
-      signal?: AbortSignal;
-    },
+    options: RequestOptions | undefined,
+    attempt: RetryAttempt,
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const method = options?.method ?? 'GET';
-    const fetchOptions: RequestInit = {
-      method,
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      signal: options?.signal ?? ctx.signal,
-    };
-    if (options?.body !== undefined) {
-      fetchOptions.body = JSON.stringify(options.body);
-    }
+    const timer = new AbortController();
+    const timerId = setTimeout(
+      () =>
+        timer.abort(
+          new DOMException(
+            `Ensembl request timed out after ${ENSEMBL_ATTEMPT_TIMEOUT_MS}ms.`,
+            'TimeoutError',
+          ),
+        ),
+      ENSEMBL_ATTEMPT_TIMEOUT_MS,
+    );
 
     ctx.log.debug('Ensembl request', { url, method });
 
-    const response = await fetch(url, fetchOptions);
-
-    if (response.status === 429) {
-      const retryAfter = response.headers.get('Retry-After');
-      throw serviceUnavailable(
-        `Ensembl rate limit exceeded.${retryAfter ? ` Retry after ${retryAfter}s.` : ''}`,
-        { retryAfter: retryAfter ? Number(retryAfter) : undefined },
-      );
-    }
-
-    const text = await response.text();
-
-    // Detect HTML error pages
-    if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
-      throw serviceUnavailable(
-        'Ensembl API returned HTML instead of JSON — service may be degraded.',
-      );
-    }
-
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw serviceUnavailable(`Ensembl API returned unparseable response.`, {
-        status: response.status,
+      const response = await fetch(url, {
+        method,
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        ...(options?.body !== undefined && { body: JSON.stringify(options.body) }),
+        signal: AbortSignal.any([attempt.signal, timer.signal]),
       });
-    }
 
-    // Ensembl error envelope: { error: "..." }
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'error' in parsed &&
-      typeof (parsed as EnsemblErrorEnvelope).error === 'string'
-    ) {
-      const msg = (parsed as EnsemblErrorEnvelope).error;
-      // Classify based on message content
-      if (/not found|not exist|does not exist|no stable id/i.test(msg)) {
-        throw notFound(msg);
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('Retry-After');
+        throw serviceUnavailable(
+          `Ensembl rate limit exceeded.${retryAfter ? ` Retry after ${retryAfter}s.` : ''}`,
+          { retryAfter: retryAfter ? Number(retryAfter) : undefined },
+        );
       }
-      if (/invalid|unrecognized|malformed|bad request/i.test(msg)) {
-        throw validationError(msg);
+
+      return parseEnsemblBody<T>(response.status, await response.text());
+    } catch (err) {
+      // A deadline expiry or a caller cancellation propagates as thrown, so withRetry
+      // can tell them apart; only this attempt's own timer becomes a (retryable) Timeout.
+      if (err instanceof McpError || attempt.signal.aborted) throw err;
+      if (timer.signal.aborted) {
+        throw timeout(
+          `Ensembl did not respond within ${ENSEMBL_ATTEMPT_TIMEOUT_MS / 1000}s.`,
+          { timeoutMs: ENSEMBL_ATTEMPT_TIMEOUT_MS },
+          { cause: err },
+        );
       }
-      // Generic API error — treat as not found for ID-based lookups
-      throw notFound(msg);
+      // A transport failure (refused, reset, DNS) names the upstream host: it rides
+      // `cause` into the log and the caller gets a retryable error without it.
+      throw serviceUnavailable('Ensembl could not be reached.', undefined, { cause: err });
+    } finally {
+      clearTimeout(timerId);
     }
-
-    if (!response.ok) {
-      throw serviceUnavailable(`Ensembl API returned HTTP ${response.status}.`, {
-        status: response.status,
-      });
-    }
-
-    return parsed as T;
   }
 
   // --- withRetry wrapper ---
 
-  private fetchWithRetry<T>(
+  private async fetchWithRetry<T>(
     path: string,
     ctx: Context,
-    options?: {
-      method?: 'GET' | 'POST';
-      body?: unknown;
-    },
+    options?: RequestOptions,
   ): Promise<T> {
-    const operation = `EnsemblService.fetch:${path.split('?')[0]}`;
+    const callStart = this.callStarts.get(ctx) ?? Date.now();
+    this.callStarts.set(ctx, callStart);
     const reqCtx = requestContextService.createRequestContext({
-      operation,
+      operation: `EnsemblService.fetch:${path.split('?')[0]}`,
       parentContext: ctx,
     });
-    return withRetry(() => this.fetchJson<T>(path, ctx, options), {
-      operation,
-      context: reqCtx,
-      baseDelayMs: 1000,
-      signal: ctx.signal,
-    });
+    try {
+      return await withRetry((attempt) => this.fetchJson<T>(path, ctx, options, attempt), {
+        // A fixed label, not the path: a path echoes caller input the tools' message
+        // patterns could misread as an input error. It rides the log context instead.
+        operation: 'Ensembl request',
+        context: reqCtx,
+        baseDelayMs: 1000,
+        signal: ctx.signal,
+        deadlineMs: Math.max(1, callStart + ENSEMBL_CALL_DEADLINE_MS - Date.now()),
+      });
+    } catch (err) {
+      // withRetry reports the share of the budget this request was given; the caller
+      // is told the call's own deadline.
+      if (err instanceof McpError && err.data?.reason === 'retry_deadline_exceeded') {
+        const attempts = Number(err.data.retryAttempts);
+        throw timeout(
+          `Ensembl request exceeded its ${ENSEMBL_CALL_DEADLINE_MS}ms retry deadline after ` +
+            `${attempts} attempt${attempts > 1 ? 's' : ''}.`,
+          {
+            reason: 'retry_deadline_exceeded',
+            deadlineMs: ENSEMBL_CALL_DEADLINE_MS,
+            elapsedMs: Date.now() - callStart,
+            retryAttempts: attempts,
+          },
+          { cause: err },
+        );
+      }
+      throw err;
+    }
   }
 
   // --- Gene lookup ---
@@ -331,25 +503,33 @@ export class EnsemblService {
 
   async lookupGeneById(id: string, expandTranscripts: boolean, ctx: Context): Promise<GeneRecord> {
     const expand = expandTranscripts ? '?expand=1' : '';
-    const path = `/lookup/id/${encodeURIComponent(id)}${expand}`;
+    const path = `/lookup/id/${encodeURIComponent(unversioned(id))}${expand}`;
     const raw = await this.fetchWithRetry<RawGeneRecord>(path, ctx);
     return normalizeGene(raw);
   }
 
+  /**
+   * One `POST /lookup/id` for every ID, each sent once and unversioned. The records are
+   * keyed by the IDs as given, so inputs that differ only by version share a record;
+   * an ID Ensembl does not hold is absent.
+   */
   async lookupGenesBatch(
     ids: string[],
     expandTranscripts: boolean,
     ctx: Context,
   ): Promise<Map<string, GeneRecord>> {
-    const body: Record<string, unknown> = { ids };
+    const body: Record<string, unknown> = { ids: [...new Set(ids.map(unversioned))] };
     if (expandTranscripts) body.expand = 1;
     const raw = await this.fetchWithRetry<Record<string, RawGeneRecord | null>>('/lookup/id', ctx, {
       method: 'POST',
       body,
     });
     const result = new Map<string, GeneRecord>();
-    for (const [k, v] of Object.entries(raw)) {
-      if (v) result.set(k, normalizeGene(v));
+    for (const id of ids) {
+      // Own keys only: a caller's ID such as "constructor" must not read the prototype.
+      const key = unversioned(id);
+      const record = Object.hasOwn(raw, key) ? raw[key] : null;
+      if (record) result.set(id, normalizeGene(record));
     }
     return result;
   }
@@ -374,10 +554,198 @@ export class EnsemblService {
     return result;
   }
 
+  // --- Alias resolution ---
+
+  /**
+   * Gene stable IDs a synonym, former symbol, or other external name maps to in
+   * one species. LRG records are dropped: each mirrors an Ensembl gene locus.
+   * Sorted, since Ensembl's own order varies between identical requests. A name
+   * the endpoint cannot address — Ensembl decodes a `/` before routing and answers
+   * 404 — maps to no gene.
+   */
+  async getGeneIdsBySymbol(symbol: string, species: string, ctx: Context): Promise<string[]> {
+    const path = `/xrefs/symbol/${encodeURIComponent(species)}/${encodeURIComponent(symbol)}?object_type=gene`;
+    const raw = await this.fetchWithRetry<RawXrefSymbolEntry[]>(path, ctx).catch((err: unknown) => {
+      if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) return [];
+      throw err;
+    });
+    if (!Array.isArray(raw)) return [];
+    return [...new Set(raw.map((r) => r.id).filter((id) => id && !id.startsWith('LRG_')))].sort();
+  }
+
+  /**
+   * Reference top-level region names for a species, fetched once per process. An
+   * answer listing none is malformed (every species has top-level regions), so it
+   * is used for this call but not kept.
+   */
+  async getReferenceRegions(species: string, ctx: Context): Promise<Set<string>> {
+    const cached = this.referenceRegions.get(species);
+    if (cached) return cached;
+    const raw = await this.fetchWithRetry<RawAssemblyInfo>(
+      `/info/assembly/${encodeURIComponent(species)}`,
+      ctx,
+    );
+    const regions = new Set(
+      (raw.top_level_region ?? []).flatMap((region) => (region.name ? [region.name] : [])),
+    );
+    if (regions.size > 0) this.referenceRegions.set(species, regions);
+    return regions;
+  }
+
+  /**
+   * Whether Ensembl resolves `name`, an `M` or `chrM` spelling, to the species'
+   * mitochondrion. It answers these names per species and per spelling: the
+   * mitochondrion in Drosophila, an unrelated scaffold or contig in human, mouse, and
+   * C. elegans (a different one between calls), or no region at all. `/info/assembly`
+   * resolves a name as the sequence and overlap endpoints do; the region it lands on is
+   * the mitochondrion when one of its synonyms names one. A verdict is kept for the
+   * process lifetime. A failing name also carries the species' mitochondrion when one of
+   * its reference regions is recognizably named so — a lookup that degrades to no name.
+   */
+  async checkMitochondrionAlias(
+    species: string,
+    name: string,
+    ctx: Context,
+  ): Promise<MitochondrionAliasCheck> {
+    const key = `${species}\u0000${name}`;
+    let resolves = this.mitochondrionAliases.get(key);
+    if (resolves === undefined) {
+      resolves = await this.fetchWithRetry<RawRegionInfo>(
+        `/info/assembly/${encodeURIComponent(species)}/${encodeURIComponent(name)}?synonyms=1`,
+        ctx,
+      ).then(
+        (raw) => (raw.synonyms ?? []).some((s) => MITOCHONDRION_NAME.test(s.name ?? '')),
+        (err: unknown) => {
+          if (err instanceof McpError && NO_SLICE.test(err.message)) return false;
+          throw err;
+        },
+      );
+      this.mitochondrionAliases.set(key, resolves);
+    }
+    if (resolves) return { resolves };
+
+    const mitochondrion = await this.getReferenceRegions(species, ctx).then(
+      (regions) => [...regions].find((region) => MITOCHONDRION_NAME.test(region)),
+      (err: unknown) => {
+        if (ctx.signal.aborted) throw err;
+        ctx.log.warning('Reference region lookup failed', {
+          species,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      },
+    );
+    return { resolves: false, ...(mitochondrion && { mitochondrion }) };
+  }
+
+  /**
+   * Resolve symbols `/lookup/symbol` missed through `/xrefs/symbol`: at most
+   * XREF_CONCURRENCY xref requests in flight, one `POST /lookup/id` for every
+   * candidate, and — only when a symbol still maps to several genes — the
+   * species' reference regions, which drop patch and haplotype copies unless
+   * that would drop them all; regions that cannot be read leave every candidate
+   * in place. With `verifySpeciesFirst`, the first symbol's xref request runs
+   * alone, so an unrecognized species fails once rather than once per symbol.
+   *
+   * A request Ensembl leaves unanswered through every retry marks only the symbols
+   * that needed it `unavailable`; the rest still resolve. An unanswered species check
+   * proves nothing about the species, so the remaining requests run and an unknown
+   * species fails them. Any other failure, and a cancellation, fails the resolution.
+   */
+  async resolveSymbolAliases(
+    symbols: string[],
+    species: string,
+    expandTranscripts: boolean,
+    ctx: Context,
+    verifySpeciesFirst = false,
+  ): Promise<Map<string, AliasResolution>> {
+    const unanswered = (err: unknown): err is McpError =>
+      !ctx.signal.aborted &&
+      err instanceof McpError &&
+      (err.code === JsonRpcErrorCode.ServiceUnavailable || err.code === JsonRpcErrorCode.Timeout);
+
+    const idsBySymbol = new Map<string, string[]>();
+    const unavailable = new Map<string, McpError>();
+    const pending = [...symbols];
+    const resolveNext = async (symbol: string) => {
+      try {
+        idsBySymbol.set(symbol, await this.getGeneIdsBySymbol(symbol, species, ctx));
+      } catch (err) {
+        if (!unanswered(err)) throw err;
+        unavailable.set(symbol, err);
+      }
+    };
+    const first = verifySpeciesFirst ? pending.shift() : undefined;
+    if (first !== undefined) await resolveNext(first);
+    const worker = async () => {
+      for (let symbol = pending.shift(); symbol !== undefined; symbol = pending.shift()) {
+        await resolveNext(symbol).catch((err: unknown) => {
+          // One failure fails the whole resolution: the other workers start nothing more.
+          pending.length = 0;
+          throw err;
+        });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(XREF_CONCURRENCY, pending.length) }, worker));
+
+    const candidateIds = [...new Set([...idsBySymbol.values()].flat())];
+    let genes = new Map<string, GeneRecord>();
+    if (candidateIds.length > 0) {
+      try {
+        genes = await this.lookupGenesBatch(candidateIds, expandTranscripts, ctx);
+      } catch (err) {
+        if (!unanswered(err)) throw err;
+        for (const [symbol, ids] of idsBySymbol) {
+          if (ids.length > 0) unavailable.set(symbol, err);
+        }
+      }
+    }
+
+    // Read at most once per call. The filter only narrows candidates that are already
+    // a truthful answer, so a failed read skips it rather than failing the call.
+    let referenceRegions: Promise<Set<string>> | undefined;
+    const readReferenceRegions = () =>
+      (referenceRegions ??= this.getReferenceRegions(species, ctx).catch((err: unknown) => {
+        if (ctx.signal.aborted) throw err;
+        ctx.log.warning('Reference region lookup failed', {
+          species,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return new Set<string>();
+      }));
+
+    const result = new Map<string, AliasResolution>();
+    for (const symbol of symbols) {
+      const error = unavailable.get(symbol);
+      if (error) {
+        result.set(symbol, { kind: 'unavailable', error });
+        continue;
+      }
+      let matches = (idsBySymbol.get(symbol) ?? [])
+        .map((id) => genes.get(id))
+        .filter((gene): gene is GeneRecord => gene !== undefined);
+      if (matches.length > 1) {
+        const regions = await readReferenceRegions();
+        const onReference = matches.filter((gene) => regions.has(gene.chromosome ?? ''));
+        if (onReference.length > 0) matches = onReference;
+      }
+      const [only] = matches;
+      result.set(
+        symbol,
+        matches.length > 1
+          ? { kind: 'ambiguous', candidates: matches }
+          : only
+            ? { kind: 'gene', gene: only }
+            : { kind: 'none' },
+      );
+    }
+    return result;
+  }
+
   // --- Transcript lookup ---
 
   async lookupTranscript(id: string, ctx: Context): Promise<TranscriptRecord> {
-    const path = `/lookup/id/${encodeURIComponent(id)}`;
+    const path = `/lookup/id/${encodeURIComponent(unversioned(id))}`;
     const raw = await this.fetchWithRetry<RawTranscriptRecord>(path, ctx);
     return normalizeTranscript(raw);
   }
@@ -398,7 +766,7 @@ export class EnsemblService {
       if (expand5prime > 0) params.push(`expand_5prime=${expand5prime}`);
       if (expand3prime > 0) params.push(`expand_3prime=${expand3prime}`);
     }
-    const path = `/sequence/id/${encodeURIComponent(id)}?${params.join('&')}`;
+    const path = `/sequence/id/${encodeURIComponent(unversioned(id))}?${params.join('&')}`;
     const raw = await this.fetchWithRetry<RawSequenceRecord>(path, ctx);
     return normalizeSequence(raw, type);
   }
@@ -513,16 +881,22 @@ export class EnsemblService {
     targetSpecies: string | undefined,
     ctx: Context,
   ): Promise<HomologyResult> {
-    let path = `/homology/id/${encodeURIComponent(species)}/${encodeURIComponent(id)}?type=${encodeURIComponent(type)}`;
+    const queryId = unversioned(id);
+    let path = `/homology/id/${encodeURIComponent(species)}/${encodeURIComponent(queryId)}?type=${encodeURIComponent(type)}`;
     if (targetSpecies) path += `&target_species=${encodeURIComponent(targetSpecies)}`;
     const raw = await this.fetchWithRetry<RawHomologyResponse>(path, ctx);
-    return normalizeHomology(raw, id);
+    // An ID absent from the source species answers HTTP 200 {"data":[]}; a known gene
+    // with no homologs still carries its own entry with an empty homologies list.
+    if (!raw.data?.length) {
+      throw notFound(`Gene ID "${id}" not found in ${species}.`, { reason: 'not_found' });
+    }
+    return normalizeHomology(raw, queryId);
   }
 
   // --- Xrefs ---
 
   async getXrefsById(id: string, dbname: string | undefined, ctx: Context): Promise<XrefEntry[]> {
-    let path = `/xrefs/id/${encodeURIComponent(id)}`;
+    let path = `/xrefs/id/${encodeURIComponent(unversioned(id))}`;
     if (dbname) path += `?external_db=${encodeURIComponent(dbname)}`;
     const raw = await this.fetchWithRetry<RawXrefEntry[]>(path, ctx);
     if (!Array.isArray(raw)) return [];

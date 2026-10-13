@@ -3,6 +3,8 @@
  * @module services/ensembl/types
  */
 
+import type { McpError } from '@cyanheads/mcp-ts-core/errors';
+
 // --- Raw upstream types (fields optional unless guaranteed present) ---
 
 export type RawGeneRecord = {
@@ -96,6 +98,16 @@ export type RawOverlapFeature = {
 export type RawAssemblyInfo = {
   assembly_name?: string;
   default_coord_system_version?: string;
+  /** Reference top-level regions (chromosomes, unplaced scaffolds); patch and haplotype regions are absent. */
+  top_level_region?: Array<{ name?: string }>;
+};
+
+/**
+ * `/info/assembly/:species/:region?synonyms=1` — only the field read here: the other
+ * names of the sequence region Ensembl resolved the requested name to.
+ */
+export type RawRegionInfo = {
+  synonyms?: Array<{ dbname?: string; name?: string }>;
 };
 
 export type RawVepTranscriptConsequence = {
@@ -170,6 +182,12 @@ export type RawXrefEntry = {
   version?: string;
 };
 
+/** `/xrefs/symbol/:species/:symbol` row — an Ensembl object an external name maps to. */
+export type RawXrefSymbolEntry = {
+  id: string;
+  type?: string;
+};
+
 export type RawSpeciesInfo = {
   name?: string;
   display_name?: string;
@@ -209,6 +227,26 @@ export type GeneRecord = {
   transcripts?: TranscriptSummary[];
 };
 
+/**
+ * Outcome of resolving a symbol that `/lookup/symbol` missed through
+ * `/xrefs/symbol`: one gene, several unrelated genes, nothing, or no answer —
+ * Ensembl stayed unavailable (or timed out) through every retry of a request
+ * the symbol needed, carried as that request's error.
+ */
+export type AliasResolution =
+  | { kind: 'gene'; gene: GeneRecord }
+  | { kind: 'ambiguous'; candidates: GeneRecord[] }
+  | { kind: 'none' }
+  | { kind: 'unavailable'; error: McpError };
+
+/**
+ * Whether Ensembl resolves an `M`/`chrM` spelling to the species' mitochondrion; when it
+ * does not, the name of the species' mitochondrion, if one is recognizable.
+ */
+export type MitochondrionAliasCheck =
+  | { resolves: true }
+  | { resolves: false; mitochondrion?: string };
+
 export type TranscriptSummary = {
   id: string;
   displayName?: string;
@@ -240,6 +278,11 @@ export type SequenceRecord = {
   type: string;
   seq: string;
   length: number;
+  /**
+   * Molecule Ensembl returned (`dna` or `protein`). It can differ from the requested
+   * `type`: a protein ID answers every type with its protein.
+   */
+  molecule?: string;
   description?: string;
 };
 
