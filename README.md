@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.5.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/ensembl-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.2.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/ensembl-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/ensembl-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.5.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/ensembl-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/ensembl-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/ensembl-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -36,7 +36,7 @@ Gene, sequence, and variant data for vertebrates and other model organisms from 
 | Tool | Description |
 |:-----|:------------|
 | `ensembl_list_species` | List species supported by Ensembl with display name, common name, assembly, taxon ID, and division |
-| `ensembl_lookup_gene` | Resolve a gene by symbol + species or by stable ID to its Ensembl ID, genomic location, biotype, and transcript list |
+| `ensembl_lookup_gene` | Resolve a gene by symbol (synonyms and former symbols included) + species or by stable ID to its Ensembl ID, genomic location, biotype, and transcript list |
 | `ensembl_get_sequence` | Fetch the DNA, cDNA, CDS, or protein sequence for a gene, transcript, protein, or genomic region |
 | `ensembl_query_region` | Find genomic features (genes, transcripts, variants, regulatory elements, exons) overlapping a chromosomal region |
 | `ensembl_predict_variant` | Predict functional consequences of a sequence variant using the Ensembl Variant Effect Predictor (VEP) |
@@ -52,7 +52,7 @@ Gene, sequence, and variant data for vertebrates and other model organisms from 
 | `ensembl://species` | Supported Ensembl species for the endpoint default division (vertebrates on the default endpoint) |
 | `ensembl://species/{division}` | Supported species in one division (`EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, `EnsemblProtists`) |
 
-All resource data is also reachable via the `ensembl_list_species` tool, which additionally filters by name.
+The species resources return the first 50 species by internal name; the `ensembl_list_species` tool pages through the rest and filters by name.
 
 ### Prompts
 
@@ -62,39 +62,45 @@ All resource data is also reachable via the `ensembl_list_species` tool, which a
 
 ## Capability reference
 
+Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as not found, so every tool and resource that takes an Ensembl stable ID drops a trailing `.N` from an `ENS…` ID before the request and returns the current version. HGVS input to `ensembl_predict_variant` (`ENST00000380152.8:c.2T>A`) keeps its version, and IDs from other sources (`AT3G52430.1`) are forwarded unchanged.
+
 ### `ensembl_list_species` <sub>tool</sub>
 
 - Optional `division` (`EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, `EnsemblProtists`; omitted, the endpoint default — vertebrates, ~356 species on GRCh38) and `nameContains`, a substring match against name, display name, and common name
 - Returns the internal name every other tool expects (`homo_sapiens`), plus display name, common name, taxon ID, assembly, and division
+- Sorted by internal name and paged by `offset` (default `0`) and `max_results` (default `50`, `0` uncapped); `totalCount` reports every match, and `nextOffset` is where the next page starts when more follow
 
 ---
 
 ### `ensembl_lookup_gene` <sub>tool</sub>
 
 - Exactly one of `symbol` (+ `species`, default `homo_sapiens`), `id`, `ids`, or `symbols` (batches up to 20); `expand_transcripts` (default `false`) adds the transcript list with biotype and canonical flag
-- A single lookup returns `gene`; a batch returns a `succeeded`/`failed` split with per-item errors instead of failing the call. Errors: `not_found`, `invalid_species`, `no_input`, `conflicting_input`
+- A symbol that is not a current gene name falls back to synonyms and former symbols (`HER2` → `ERBB2`, maize `TB1` → `TCP1`), reported as `matchedAlias`; patch and haplotype copies are set aside, and a name still shared by several genes (`MDR1`) returns `ambiguous` with the candidates to retry by `id`
+- A single lookup returns `gene` (or `ambiguous`); a batch returns `succeeded` items carrying the submitted `query` (an ID as written, version included; IDs that differ only by version are separate items with the same record) and `failed` items with `query`, `reason` (`not_found`, `ambiguous` with `candidates`, or `unavailable` when Ensembl did not answer the symbol's synonym lookup after retries), `error`, and `recovery`, instead of failing the call. A `symbols` batch on an unrecognized species throws `invalid_species`. Errors: `not_found`, `invalid_species`, `no_input`, `conflicting_input`
 
 ---
 
 ### `ensembl_get_sequence` <sub>tool</sub>
 
-- A stable ID (`ENSG…`/`ENST…`/`ENSP…`) or a region (`species:chr:start-end`, or `chr:start-end` with `species`; at most 10,000,000 bases); `type` is `genomic` (default), `cdna`, `cds`, or `protein`, the last three from a transcript or protein ID only; `expand_5prime`/`expand_3prime` add flanking bases
+- A stable ID (`ENSG…`/`ENST…`/`ENSP…`) or a region (`species:chr:start-end`, or `chr:start-end` with `species`; at most 10,000,000 bases); `type` is `genomic` (default), `cdna`, `cds`, or `protein` — `cdna` and `cds` from a transcript ID only, `protein` from a transcript or protein ID; `expand_5prime`/`expand_3prime` add flanking bases
+- Regions also take `start..end` and a `:1`/`:-1` strand suffix (`1:1000000-1000020:-1` returns the reverse complement); a species prefix in `id` wins over `species`, and the mitochondrion is `MT` in vertebrates (`mitochondrion_genome` in Drosophila, `MtDNA` in C. elegans)
+- `M` and `chrM` (any case) are forwarded only where Ensembl resolves them to the mitochondrion — Drosophila `M`/`chrM`, human and mouse `CHRM` — and otherwise rejected as `invalid_region` naming the species' mitochondrion; human `chrM` would otherwise return an unrelated patch scaffold. One cached `/info/assembly` lookup per species and spelling decides it
 - Returns a window set by `offset` (default `0`) and `max_length` (default `10000`, `0` uncapped); `length` is the full sequence length, and `truncated`/`nextOffset` say where to resume
-- Errors: `not_found`, `type_mismatch`, `missing_species`, `invalid_region`
+- Errors: `not_found`, `type_mismatch` (also a protein ID asked for `genomic`/`cdna`/`cds`, or a non-coding transcript asked for `protein`/`cds`), `invalid_species`, `missing_species`, `invalid_region` (also an id with a colon that is not a valid region)
 
 ---
 
 ### `ensembl_query_region` <sub>tool</sub>
 
-- `species` and `region` (`chr:start-end`, at most 5,000,000 bases); `feature` defaults to `["gene"]` and also accepts `transcript`, `variation`, `regulatory`, `exon`; optional `biotype` filter
-- `max_results` caps the list (default `100`, `0` uncapped) while `totalCount` reports the true count; `assemblyName` names the coordinates' assembly, and exon rows carry `parentId` and `rank`. Errors: `invalid_region`, `invalid_species`
+- `region` as `species:chr:start-end`, or `chr:start-end` with `species` (a species prefix wins over `species` and is not forwarded); at most 5,000,000 bases; reversed coordinates are rejected before any request, and `M`/`chrM` as `ensembl_get_sequence` treats them — use `MT` in vertebrates, `mitochondrion_genome` in Drosophila, `MtDNA` in C. elegans; `feature` defaults to `["gene"]` and also accepts `transcript`, `variation`, `regulatory`, `exon`; optional `biotype` filter
+- `max_results` caps the list (default `100`, `0` uncapped) while `totalCount` reports the true count; `assemblyName` names the coordinates' assembly, and exon rows carry `parentId` and `rank`. Errors: `invalid_region`, `invalid_species`, `missing_species`
 
 ---
 
 ### `ensembl_predict_variant` <sub>tool</sub>
 
 - `variant` as HGVS (transcript-relative or genomic), region+allele (`chr:start:end:strand/allele`), or a dbSNP rsID
-- Returns the most severe consequence, per-transcript impact (HIGH/MODERATE/LOW/MODIFIER), and colocated known variants with clinical significance. Errors: `invalid_notation`, `not_found`
+- Returns the most severe consequence, per-transcript impact (HIGH/MODERATE/LOW/MODIFIER), and colocated known variants with clinical significance. Errors: `invalid_notation`, `not_found`, `invalid_species`
 - `max_transcript_consequences` and `max_pubmed_ids_per_variant` (default `10` each, `0` uncapped; `include_all_colocated_pubmed` lifts the PubMed cap) bound the result, while `transcriptConsequencesTotal` and `pubmedTotal` report the full counts
 
 ---
@@ -102,7 +108,7 @@ All resource data is also reachable via the `ensembl_list_species` tool, which a
 ### `ensembl_get_homology` <sub>tool</sub>
 
 - Exactly one of `symbol` (+ `species`, default `homo_sapiens`) or `id`; `type` is `orthologues` (default), `paralogues`, or `all`; optional `target_species` filter
-- `max_results` caps the list (default `25`, `0` uncapped) while `totalCount` reports the true count. Errors: `not_found`, `no_input`, `conflicting_input`
+- `max_results` caps the list (default `25`, `0` uncapped) while `totalCount` reports the true count. Errors: `not_found`, `invalid_species` (unknown `species` or `target_species`), `no_input`, `conflicting_input`
 
 ---
 
@@ -115,21 +121,22 @@ All resource data is also reachable via the `ensembl_list_species` tool, which a
 
 ### `ensembl://gene/{id}` <sub>resource</sub>
 
-- `id` is a gene stable ID (`ENSG…`); version suffix optional
+- `id` is a gene stable ID (`ENSG…`); a version suffix is optional and dropped
 - Returns location, biotype, description, and transcript list. Errors: `not_found`
 
 ---
 
 ### `ensembl://transcript/{id}` <sub>resource</sub>
 
-- `id` is a transcript stable ID (`ENST…`); version suffix optional
+- `id` is a transcript stable ID (`ENST…`); a version suffix is optional and dropped
 - Returns parent gene, location, biotype, canonical flag, and length. Errors: `not_found`
 
 ---
 
 ### `ensembl://species` <sub>resource</sub>
 
-- No parameters — returns the endpoint default division (vertebrates, ~356 species on the default GRCh38 endpoint)
+- No parameters — covers the endpoint default division (vertebrates, ~356 species on the default GRCh38 endpoint)
+- Returns the first 50 species by internal name with `totalCount`, `shown`, and `truncated`; a truncated body's `notice` points to `ensembl_list_species` (`offset`, `max_results`) for the rest
 - For a named division, read `ensembl://species/{division}` instead
 
 ---
@@ -137,7 +144,7 @@ All resource data is also reachable via the `ensembl_list_species` tool, which a
 ### `ensembl://species/{division}` <sub>resource</sub>
 
 - `division` required: `EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, or `EnsemblProtists`
-- Returns that division's species — internal name, display name, assembly, taxon ID, and division
+- Returns that division's first 50 species by internal name — internal name, display name, assembly, taxon ID, and division — with `totalCount`, `shown`, and `truncated`; a truncated body's `notice` points to `ensembl_list_species` (`division`, `offset`, `max_results`) for the rest
 
 ---
 
@@ -153,7 +160,8 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 Ensembl-specific:
 
 - Keyless REST API — no API key required; Ensembl REST is fully public at 55,000 req/hr
-- Rate-limit-aware service layer: retries 429 honoring `Retry-After`, and retries transient 5xx and HTML error pages
+- Rate-limit-aware service layer: retries 429 honoring `Retry-After`, and retries transient 5xx, HTML error pages, and Ensembl database outages
+- Bounded upstream calls: 180 s per attempt (headers and body) and 240 s per call, retries included, so a stalled Ensembl fails with a timeout instead of hanging
 - Batch POST endpoints used throughout — `POST /lookup/id` and `POST /lookup/symbol/{species}` (up to 1,000 items each upstream) reduce N+1 round trips in multi-gene workflows
 - GRCh37 legacy support via `ENSEMBL_BASE_URL` — point the entire server at `https://grch37.rest.ensembl.org` for clinical workflows on the older assembly
 - All coordinate-bearing responses echo the assembly name so agents never see a bare genomic position without assembly context
@@ -161,8 +169,8 @@ Ensembl-specific:
 Agent-friendly output:
 
 - `ensembl_get_sequence` returns sequences in bounded windows (10,000 characters by default) with the full length and a `nextOffset` to continue, so a long gene or locus never lands in one response unasked
-- `ensembl_list_species` is explicitly the discovery step — tool descriptions call out the opaque internal-name format and direct agents to it before using species-dependent tools
-- Cross-tool chaining made explicit: xref IDs from `ensembl_get_xrefs` are described as inputs for protein and literature servers; the `ensembl_gene_dossier` prompt sequences all 6 tools into one research workflow
+- `ensembl_list_species` is explicitly the discovery step — tool descriptions call out the opaque internal-name format and direct agents to it before using species-dependent tools; it returns 50 species per page by default with a `nextOffset` to continue, so even the ~1,500-species Fungi division stays bounded
+- Cross-tool chaining made explicit: xref IDs from `ensembl_get_xrefs` are described as inputs for protein and literature servers; the `ensembl_gene_dossier` prompt sequences 6 of the 7 tools into one research workflow
 
 ## Getting started
 

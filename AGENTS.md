@@ -2,9 +2,9 @@
 
 **Server:** ensembl-mcp-server
 **Version:** 0.5.1
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.14`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/server` ^2.2.0
+**MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
 **Zod:** ^4.6.5
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -237,6 +237,7 @@ src/
       ensembl-service.ts                # Ensembl REST client, rate-limit retry, error normalization
       types.ts                          # Ensembl API response shapes
   mcp-server/
+    tools/region-grammar.ts             # Region grammar + pre-request checks shared by both region tools
     tools/definitions/
       list-species.tool.ts              # ensembl_list_species
       lookup-gene.tool.ts               # ensembl_lookup_gene (symbol + ID + batch)
