@@ -25,17 +25,48 @@ const mockSpecies: SpeciesInfo[] = Array.from({ length: 60 }, (_, i) => ({
   division: 'EnsemblVertebrates',
 }));
 
-type SpeciesResult = { species: SpeciesInfo[]; totalCount: number };
+type SpeciesResult = {
+  species: SpeciesInfo[];
+  totalCount: number;
+  shown: number;
+  truncated: boolean;
+  notice?: string;
+};
+
+const sortedNames = mockSpecies.map((s) => s.name);
 
 describe('ensemblSpeciesResource (static, default division)', () => {
-  it('returns full species list with totalCount', async () => {
-    mockListSpecies.mockResolvedValueOnce([...mockSpecies]);
+  it('returns the first 50 species by name with truthful totals (issue #3)', async () => {
+    mockListSpecies.mockResolvedValueOnce([...mockSpecies].reverse());
     const ctx = createMockContext();
     const params = ensemblSpeciesResource.params!.parse({});
     const result = (await ensemblSpeciesResource.handler(params, ctx)) as SpeciesResult;
-    expect(result.species).toHaveLength(60);
+    expect(result.species.map((s) => s.name)).toEqual(sortedNames.slice(0, 50));
     expect(result.totalCount).toBe(60);
+    expect(result.shown).toBe(50);
+    expect(result.truncated).toBe(true);
+    expect(result.notice).toContain('ensembl_list_species');
+    expect(result.notice).toContain('offset 50');
+    expect(result.notice).toContain('max_results');
+    expect(result.notice).toContain('division omitted');
   });
+
+  it.each([0, 50])(
+    'returns a complete body, truncated: false and no notice, for %i species',
+    async (count) => {
+      mockListSpecies.mockResolvedValueOnce(mockSpecies.slice(0, count));
+      const ctx = createMockContext();
+      const result = (await ensemblSpeciesResource.handler(
+        ensemblSpeciesResource.params!.parse({}),
+        ctx,
+      )) as SpeciesResult;
+      expect(result.species).toHaveLength(count);
+      expect(result.totalCount).toBe(count);
+      expect(result.shown).toBe(count);
+      expect(result.truncated).toBe(false);
+      expect(result).not.toHaveProperty('notice');
+    },
+  );
 
   it('fetches the default division (no division filter passed to the service)', async () => {
     mockListSpecies.mockResolvedValueOnce([...mockSpecies]);
@@ -87,6 +118,21 @@ describe('ensemblSpeciesByDivisionResource (templated by division)', () => {
     const result = (await ensemblSpeciesByDivisionResource.handler(params, ctx)) as SpeciesResult;
     expect(mockListSpecies).toHaveBeenCalledWith('EnsemblPlants', expect.anything());
     expect(result.totalCount).toBe(60);
+  });
+
+  it('caps the division body at 50 and names the division in the continuation notice (issue #3)', async () => {
+    mockListSpecies.mockResolvedValueOnce([...mockSpecies].reverse());
+    const ctx = createMockContext();
+    const params = ensemblSpeciesByDivisionResource.params!.parse({ division: 'EnsemblFungi' });
+    const result = (await ensemblSpeciesByDivisionResource.handler(params, ctx)) as SpeciesResult;
+    expect(result.species.map((s) => s.name)).toEqual(sortedNames.slice(0, 50));
+    expect(result.totalCount).toBe(60);
+    expect(result.shown).toBe(50);
+    expect(result.truncated).toBe(true);
+    expect(result.notice).toContain('ensembl_list_species');
+    expect(result.notice).toContain('division "EnsemblFungi"');
+    expect(result.notice).toContain('offset 50');
+    expect(result.notice).toContain('max_results');
   });
 
   it('rejects an invalid division value', () => {

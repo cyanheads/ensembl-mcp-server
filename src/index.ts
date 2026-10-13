@@ -57,7 +57,7 @@ await createApp({
   prompts: [ensemblGeneDossierPrompt],
   instructions: `Ensembl genomics server — vertebrate and model organism gene, sequence, and variant data.
 Species names use Ensembl internal format: lowercase_underscore scientific names (homo_sapiens, mus_musculus).
-Discovery workflow: ensembl_list_species → ensembl_lookup_gene → ensembl_get_sequence / ensembl_get_xrefs / ensembl_get_homology.
+Discovery workflow: ensembl_list_species (nameContains finds a species by common or scientific name; results come 50 at a time) → ensembl_lookup_gene → ensembl_get_sequence / ensembl_get_xrefs / ensembl_get_homology.
 For a complete gene research workflow, use the ensembl_gene_dossier prompt.
 Override the default GRCh38 endpoint by setting ENSEMBL_BASE_URL (e.g. https://grch37.rest.ensembl.org for GRCh37).`,
   setup(core) {
