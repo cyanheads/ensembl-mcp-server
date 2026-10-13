@@ -610,6 +610,22 @@ describe('EnsemblService', () => {
       },
     );
 
+    it.each(TOOL_CALLS)(
+      '%s reports a body that is not JSON as a reasonless ServiceUnavailable, never an input error',
+      async (_label, def, args) => {
+        mockFetch.mockResolvedValue({
+          status: 200,
+          ok: true,
+          headers: { get: () => null },
+          text: async () => '{"id":"ENSG0000013',
+        } as unknown as Response);
+        const { value: result } = await settle(runTool(def, args));
+        const error = errorOf(result!);
+        expect(error.code).toBe(-32000);
+        expect(error.data?.reason).toBeUndefined();
+      },
+    );
+
     it('classifies a long adversarial envelope in linear time', async () => {
       // A near-miss of every pattern the envelope is tested against, none of them matching.
       const unit = 'could not connect to databas DBI connec not foun invali at /nfs/x lin ';

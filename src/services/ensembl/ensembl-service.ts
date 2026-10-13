@@ -114,7 +114,8 @@ function parseEnsemblBody<T>(status: number, text: string): T {
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw serviceUnavailable(`Ensembl API returned unparseable response.`, { status });
+    // Worded to match no tool's input-error pattern ("parse", "invalid", "malformed").
+    throw serviceUnavailable('Ensembl API returned a response that is not JSON.', { status });
   }
 
   if (
