@@ -4,7 +4,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
+import { validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensemblQueryRegion } from '@/mcp-server/tools/definitions/query-region.tool.js';
@@ -272,8 +272,8 @@ describe('ensemblQueryRegion', () => {
       '5000001 is greater than the maximum allowed length of 5000000. Request smaller regions of sequence';
 
     it('classifies the upstream maximum-length message as invalid_region with the size limit in recovery', async () => {
-      // fetchJson surfaces an unrecognized Ensembl error envelope as NotFound.
-      mockQueryRegion.mockRejectedValueOnce(notFound(lengthMessage));
+      // fetchJson surfaces an unrecognized Ensembl 400 envelope as ValidationError.
+      mockQueryRegion.mockRejectedValueOnce(validationError(lengthMessage));
       const result = await runToolContract(ensemblQueryRegion, {
         species: 'homo_sapiens',
         region: '1:1-5000001',
@@ -314,14 +314,15 @@ describe('ensemblQueryRegion', () => {
         '1:250000000-250000100',
         'Cannot request a slice whose start (250000000) is greater than 248956422 for 1.',
       ],
+      // Comma grouping skips the local order check, so Ensembl's reversed rejection still arrives.
       [
-        '1:500-100',
-        'Cannot request a slice whose start is greater than its end. Start: 500. End: 100',
+        '1:5,000-1,000',
+        'Cannot request a slice whose start is greater than its end. Start: 5000. End: 1000',
       ],
       ['1:1-5000000.5', 'Could not decode region 1:1-5000000.5'],
     ])('classifies %s as invalid_region with the declared recovery', async (region, message) => {
-      // fetchJson surfaces an unrecognized Ensembl error envelope as NotFound.
-      mockQueryRegion.mockRejectedValueOnce(notFound(message));
+      // fetchJson surfaces an unrecognized Ensembl 400 envelope as ValidationError.
+      mockQueryRegion.mockRejectedValueOnce(validationError(message));
       const result = await runToolContract(ensemblQueryRegion, { species: 'homo_sapiens', region });
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toMatchObject({
@@ -333,7 +334,7 @@ describe('ensemblQueryRegion', () => {
     });
 
     it('still matches "invalid" followed by "region" on one line', async () => {
-      mockQueryRegion.mockRejectedValueOnce(notFound('Invalid requested region 13:abc'));
+      mockQueryRegion.mockRejectedValueOnce(validationError('Invalid requested region 13:abc'));
       const result = await runToolContract(ensemblQueryRegion, {
         species: 'homo_sapiens',
         region: '13:abc',
@@ -347,7 +348,9 @@ describe('ensemblQueryRegion', () => {
       // "invalid" repeated with no "region" after it is the backtracking worst case for
       // /invalid.*region/: ~210k characters took seconds; a linear scan takes about a millisecond.
       const echoed = 'invalid'.repeat(30_000);
-      mockQueryRegion.mockRejectedValueOnce(notFound(`No slice found for location ${echoed}`));
+      mockQueryRegion.mockRejectedValueOnce(
+        validationError(`No slice found for location ${echoed}`),
+      );
       const ctx = createMockContext({ errors: ensemblQueryRegion.errors });
       const input = ensemblQueryRegion.input.parse({ species: 'homo_sapiens', region: echoed });
       const started = performance.now();

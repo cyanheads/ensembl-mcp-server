@@ -3,6 +3,7 @@
  * @module tests/tools/get-sequence.tool.test
  */
 
+import { notFound, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensemblGetSequence } from '@/mcp-server/tools/definitions/get-sequence.tool.js';
@@ -560,7 +561,14 @@ describe('ensemblGetSequence non-genomic type in region mode (issue #25)', () =>
   });
 
   it('leaves stable-ID mode unaffected: a non-genomic type on a transcript ID reaches the service', async () => {
-    mockGetSequenceById.mockResolvedValueOnce(mockProteinSeq);
+    // A transcript's cDNA comes back as a DNA molecule; a protein molecule here is a type_mismatch (#30).
+    mockGetSequenceById.mockResolvedValueOnce({
+      id: 'ENST00000380152',
+      type: 'cdna',
+      molecule: 'dna',
+      seq: 'AGAGGCGGAGCCGCTGTGG',
+      length: 19,
+    });
     const result = await runToolContract(ensemblGetSequence, {
       id: 'ENST00000380152',
       type: 'cdna',
@@ -574,6 +582,88 @@ describe('ensemblGetSequence non-genomic type in region mode (issue #25)', () =>
       expect.anything(),
     );
     expect(mockGetSequenceByRegion).not.toHaveBeenCalled();
+  });
+});
+
+describe('ensemblGetSequence classification independent of the service error code (issues #29, #30)', () => {
+  beforeEach(() => {
+    mockGetSequenceById.mockReset();
+    mockGetSequenceByRegion.mockReset();
+  });
+
+  it.each([
+    ['NotFound', notFound],
+    ['ValidationError', validationError],
+  ])(
+    'maps the unknown-species message to invalid_species when the service throws %s',
+    async (_l, make) => {
+      mockGetSequenceByRegion.mockRejectedValueOnce(
+        make("Can not find internal name for species 'homo_sapienz'"),
+      );
+      const result = await runToolContract(ensemblGetSequence, {
+        id: '1:1-100',
+        species: 'homo_sapienz',
+      });
+      expect(result.structuredContent).toMatchObject({
+        error: { code: -32007, data: { reason: 'invalid_species' } },
+      });
+    },
+  );
+
+  it.each([
+    ['NotFound', notFound],
+    ['ValidationError', validationError],
+  ])(
+    'maps the no-sequences message to type_mismatch when the service throws %s',
+    async (_l, make) => {
+      mockGetSequenceById.mockRejectedValueOnce(
+        make(
+          'No sequences returned, please check the type specified is compatible with the object requested',
+        ),
+      );
+      const result = await runToolContract(ensemblGetSequence, {
+        id: 'ENST00000456328',
+        type: 'protein',
+      });
+      expect(result.structuredContent).toMatchObject({
+        error: { code: -32007, data: { reason: 'type_mismatch' } },
+      });
+    },
+  );
+
+  it('fails a protein molecule returned for a cdna request as type_mismatch', async () => {
+    mockGetSequenceById.mockResolvedValueOnce({
+      ...mockProteinSeq,
+      id: 'ENSP00000369497',
+      type: 'cdna',
+      molecule: 'protein',
+    });
+    const result = await runToolContract(ensemblGetSequence, {
+      id: 'ENSP00000369497',
+      type: 'cdna',
+    });
+    expect(result.structuredContent).toMatchObject({
+      error: { code: -32007, data: { reason: 'type_mismatch' } },
+    });
+    expect(contentText(result)).not.toContain(mockProteinSeq.seq);
+  });
+
+  it('covers protein IDs and non-coding transcripts in the type_mismatch contract', () => {
+    const entry = ensemblGetSequence.errors!.find((e) => e.reason === 'type_mismatch')!;
+    expect(entry.when).toContain('protein ID');
+    expect(entry.when).toContain('non-coding transcript');
+    expect(ensemblGetSequence.input.shape.type.description).toContain('protein ID');
+  });
+});
+
+describe('ensemblGetSequence region forms in the definition (issues #33, #36, #39)', () => {
+  it('documents the strand suffix, the .. separator, MT, prefix precedence, and reverse-strand expansion', () => {
+    const { id, species, expand_5prime } = ensemblGetSequence.input.shape;
+    expect(id.description).toContain(':-1');
+    expect(id.description).toContain('..');
+    expect(id.description).toContain('MT');
+    expect(species.description).toContain('takes precedence');
+    expect(expand_5prime.description).toContain(':-1');
   });
 });
 

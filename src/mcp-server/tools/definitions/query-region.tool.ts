@@ -5,9 +5,21 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import {
+  isMitochondrionAlias,
+  isReversed,
+  leadingChromosome,
+  mentionsInOrder,
+  mitochondrionMessage,
+  parseRegion,
+  reversedMessage,
+} from '@/mcp-server/tools/region-grammar.js';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 
 const FEATURE_TYPES = ['gene', 'transcript', 'variation', 'regulatory', 'exon'] as const;
+
+/** Ensembl's rejection of an unknown species; it quotes the name it could not find. */
+const UNKNOWN_SPECIES = /can not find internal name for species/i;
 
 const FeatureSchema = z.object({
   id: z.string().optional().describe('Ensembl stable ID for this feature (e.g. ENSG…, rs…).'),
@@ -46,21 +58,6 @@ const FeatureSchema = z.object({
     .describe('Position (1-based) of an exon within its parent transcript.'),
 });
 
-/**
- * Linear-time `/invalid.*region/i`: "invalid" followed later on the same line by
- * "region". Ensembl echoes the caller's region into its error text, and the
- * backtracking regex is quadratic in that echo.
- */
-function mentionsInvalidRegion(msg: string): boolean {
-  return msg
-    .toLowerCase()
-    .split(/[\n\r\u2028\u2029]/)
-    .some((line) => {
-      const at = line.indexOf('invalid');
-      return at !== -1 && line.includes('region', at + 'invalid'.length);
-    });
-}
-
 export const ensemblQueryRegion = tool('ensembl_query_region', {
   title: 'Query Genomic Region',
   description:
@@ -68,7 +65,8 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     'elements, or exons. Returns each feature with its stable ID, type, location, biotype, and name, ' +
     'plus the genome assembly the coordinates are on. ' +
     'Useful for "what\'s in this locus?" and for seeding follow-up lookups. Region format is chr:start-end ' +
-    '(e.g. 13:32315086-32400268 for the BRCA2 locus), spanning at most 5,000,000 bases. Ensembl normalizes ' +
+    'with species set (e.g. 13:32315086-32400268 for the BRCA2 locus), or species:chr:start-end ' +
+    '(e.g. homo_sapiens:13:32315086-32400268), spanning at most 5,000,000 bases. Ensembl normalizes ' +
     'chromosome names and canonical vertebrate output omits the chr prefix (13, not chr13); a chr-prefixed ' +
     'name like chr13 is also accepted. The feature parameter defaults to gene only — requesting ' +
     'variation in an 85 kb region matches 44,000+ entries. Explicitly include variation, regulatory, ' +
@@ -82,19 +80,26 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
       .string()
       .trim()
       .min(1)
+      .optional()
       .describe(
-        'Species in Ensembl internal format (e.g. homo_sapiens, mus_musculus). ' +
-          'Use ensembl_list_species to discover valid values.',
+        'Species in Ensembl internal format (e.g. homo_sapiens, mus_musculus). Required for a bare ' +
+          'chr:start-end region; for the species:chr:start-end form the species in region takes ' +
+          'precedence and this field is ignored. Use ensembl_list_species with nameContains (a genus ' +
+          'or common name, e.g. mouse) to find valid values.',
       ),
     region: z
       .string()
       .trim()
       .min(1)
       .describe(
-        'Genomic region in chr:start-end format (e.g. 13:32315086-32400268). Ensembl serves at most ' +
-          '5,000,000 bases per region; split a larger area into smaller windows. ' +
-          'Ensembl normalizes chromosome names and canonical vertebrate output omits the chr prefix ' +
-          '(13, not chr13); a chr-prefixed name like chr13 is also accepted. ' +
+        'Genomic region as chr:start-end with species set (e.g. 13:32315086-32400268), or ' +
+          'species:chr:start-end (e.g. homo_sapiens:13:32315086-32400268), with start at or below ' +
+          'end. Ensembl serves at most 5,000,000 bases per region; split a larger area into smaller ' +
+          'windows. Ensembl normalizes chromosome names and canonical vertebrate output omits the chr ' +
+          'prefix (13, not chr13); a chr-prefixed name like chr13 is also accepted. The mitochondrion ' +
+          'is MT in vertebrates, mitochondrion_genome in Drosophila, and MtDNA in C. elegans; M and ' +
+          'chrM are accepted only where Ensembl resolves them to the mitochondrion (Drosophila, for ' +
+          'one) and otherwise fail as invalid_region naming the mitochondrion of the species. ' +
           'For large regions (>100 kb), limit to gene feature type to avoid overwhelming results.',
       ),
     feature: z
@@ -143,8 +148,14 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
         'Total number of features found in the region before the max_results cap. ' +
           'Exceeds the returned features count when the list was capped.',
       ),
-    region: z.string().describe('The region queried, as provided.'),
-    species: z.string().describe('The species queried.'),
+    region: z
+      .string()
+      .describe('The region queried, as provided minus any species prefix (reported as species).'),
+    species: z
+      .string()
+      .describe(
+        "The species queried: the region's species prefix when it has one, otherwise the species field.",
+      ),
     assemblyName: z
       .string()
       .optional()
@@ -171,21 +182,34 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
       reason: 'invalid_region',
       code: JsonRpcErrorCode.ValidationError,
       when:
-        'The region string could not be parsed, contains invalid coordinates, or spans more than ' +
-        'the 5,000,000-base maximum.',
+        'The region string could not be parsed, has its start greater than its end, names the ' +
+        'mitochondrion M or chrM where Ensembl resolves that to another region or none, contains ' +
+        'coordinates outside the sequence region, or spans more than the 5,000,000-base maximum.',
       recovery:
-        'Use the format chr:start-end (e.g. 13:32315086-32400268) spanning at most 5,000,000 bases; ' +
-        'split a larger area into smaller windows. ' +
+        'Use the format [species:]chr:start-end (e.g. 13:32315086-32400268) with start at or below ' +
+        'end, spanning at most 5,000,000 bases; split a larger area into smaller windows. ' +
         'Chromosome names normalize either way — canonical vertebrate names omit the chr prefix ' +
-        '(13, not chr13), but a chr-prefixed name is also accepted. ' +
+        '(13, not chr13), but a chr-prefixed name is also accepted; the mitochondrion is MT in ' +
+        'vertebrates, mitochondrion_genome in Drosophila, and MtDNA in C. elegans — use that name ' +
+        'where M or chrM is rejected. ' +
         'Verify coordinates are within the chromosome bounds for the target assembly.',
     },
     {
       reason: 'invalid_species',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'The species string was not recognized by Ensembl.',
+      when: "The species (the species field or the region's species prefix) was not recognized by Ensembl.",
       recovery:
-        'Call ensembl_list_species to discover valid species names in lowercase_underscore format.',
+        'Find the internal name with ensembl_list_species, setting nameContains to a genus or common ' +
+        'name (e.g. mouse) and division for non-vertebrates. Names are lowercase_underscore ' +
+        '(mus_musculus, not Mouse).',
+    },
+    {
+      reason: 'missing_species',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A bare chr:start-end region was given without a species.',
+      recovery:
+        'Set species (e.g. homo_sapiens) alongside the chr:start-end region, or write the region ' +
+        'as species:chr:start-end.',
     },
   ],
 
@@ -199,21 +223,57 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     });
     const service = getEnsemblService();
 
+    // A species prefix names the organism the coordinates belong to, so it wins over the
+    // species field, and Ensembl receives the region without it. Two shapes are rejected
+    // before the request; everything else is forwarded as written, including forms the
+    // grammar does not take (comma-grouped coordinates, a start-only MT:16000), which
+    // Ensembl serves or rejects itself.
+    const parsed = parseRegion(input.region);
+    const species = parsed?.species ?? input.species;
+    const region = parsed?.region ?? input.region;
+    if (!species) {
+      throw ctx.fail(
+        'missing_species',
+        `Region ${input.region} needs a species — set species (e.g. homo_sapiens) or write the ` +
+          'region as species:chr:start-end.',
+      );
+    }
+    if (parsed && isReversed(parsed)) {
+      throw ctx.fail('invalid_region', reversedMessage(input.region, parsed));
+    }
+    const chromosome = parsed?.chromosome ?? leadingChromosome(region);
+    if (isMitochondrionAlias(chromosome)) {
+      const check = await service
+        .checkMitochondrionAlias(species, chromosome, ctx)
+        .catch((err: unknown) => {
+          if (UNKNOWN_SPECIES.test(err instanceof Error ? err.message : String(err))) {
+            throw ctx.fail('invalid_species', `Species "${species}" not recognized.`);
+          }
+          throw err;
+        });
+      if (!check.resolves) {
+        throw ctx.fail(
+          'invalid_region',
+          mitochondrionMessage(region, chromosome, species, check.mitochondrion),
+        );
+      }
+    }
+
     const features = await service
-      .queryRegion(input.species, input.region, input.feature, input.biotype, ctx)
+      .queryRegion(species, region, input.feature, input.biotype, ctx)
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         if (
-          mentionsInvalidRegion(msg) ||
+          mentionsInOrder(msg, 'invalid', 'region') ||
           /coordinate|parse/i.test(msg) ||
-          /is not a valid start|is not a valid end|is not a valid chr/i.test(msg) ||
+          /is not a valid (?:start|end|chr|strand)/i.test(msg) ||
           /no slice found|cannot request a slice|could not decode region/i.test(msg) ||
           /maximum allowed length/i.test(msg)
         ) {
           throw ctx.fail('invalid_region', `Invalid region "${input.region}": ${msg}`);
         }
         if (/species|invalid|unrecognized/i.test(msg)) {
-          throw ctx.fail('invalid_species', `Species "${input.species}" not recognized.`);
+          throw ctx.fail('invalid_species', `Species "${species}" not recognized.`);
         }
         throw err;
       });
@@ -230,10 +290,10 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     // cancelled request still fails.
     const assemblyName =
       features.find((f) => f.assemblyName)?.assemblyName ??
-      (await service.getDefaultAssemblyName(input.species, ctx).catch((err: unknown) => {
+      (await service.getDefaultAssemblyName(species, ctx).catch((err: unknown) => {
         if (ctx.signal.aborted) throw err;
         ctx.log.warning('Assembly lookup failed', {
-          species: input.species,
+          species,
           error: err instanceof Error ? err.message : String(err),
         });
         return;
@@ -243,7 +303,7 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     const fragments: string[] = [];
     if (totalCount === 0) {
       fragments.push(
-        `No ${input.feature.join(', ')} features found in ${input.region} for ${input.species}. ` +
+        `No ${input.feature.join(', ')} features found in ${region} for ${species}. ` +
           'The region may be intergenic, or the coordinates may not cover the intended locus. ' +
           'Use ensembl_lookup_gene to confirm the locus coordinates.',
       );
@@ -263,7 +323,7 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     }
     if (!assemblyName) {
       fragments.push(
-        `The assembly for ${input.species} could not be resolved, so assemblyName is omitted; ` +
+        `The assembly for ${species} could not be resolved, so assemblyName is omitted; ` +
           'ensembl_lookup_gene reports the assembly for any gene in this region.',
       );
     }
@@ -279,8 +339,8 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     return {
       features: returned,
       totalCount,
-      region: input.region,
-      species: input.species,
+      region,
+      species,
       ...(assemblyName && { assemblyName }),
     };
   },

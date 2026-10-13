@@ -10,9 +10,12 @@
 
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
+import { ensemblGetHomology } from '@/mcp-server/tools/definitions/get-homology.tool.js';
 import { ensemblGetSequence } from '@/mcp-server/tools/definitions/get-sequence.tool.js';
 import { ensemblGetXrefs } from '@/mcp-server/tools/definitions/get-xrefs.tool.js';
+import { ensemblLookupGene } from '@/mcp-server/tools/definitions/lookup-gene.tool.js';
 import { ensemblPredictVariant } from '@/mcp-server/tools/definitions/predict-variant.tool.js';
+import { ensemblQueryRegion } from '@/mcp-server/tools/definitions/query-region.tool.js';
 import type { VepRecord } from '@/services/ensembl/types.js';
 
 const mockGetXrefsById = vi.fn();
@@ -127,6 +130,68 @@ describe('tool wire contract — error envelope', () => {
       recovery: { hint: declaredRecovery },
     });
     expect(contentText(result)).toContain('(reason invalid_notation)');
+  });
+});
+
+describe('tool wire contract — species guidance', () => {
+  // ensembl_list_species returns 50 species a page, so "call ensembl_list_species" alone
+  // lands on a first page that may not hold the species (homo_sapiens is past it).
+  const tools = [
+    ensemblGetHomology,
+    ensemblGetSequence,
+    ensemblGetXrefs,
+    ensemblLookupGene,
+    ensemblPredictVariant,
+    ensemblQueryRegion,
+  ];
+  const surfaces: [string, string][] = tools.flatMap((def) => [
+    [`${def.name} description`, def.description] as [string, string],
+    ...Object.entries(def.input.shape).map(
+      ([key, schema]) =>
+        [`${def.name}.${key}`, (schema as { description?: string }).description ?? ''] as [
+          string,
+          string,
+        ],
+    ),
+    ...(def.errors ?? []).map(
+      (e) => [`${def.name} ${e.reason} recovery`, e.recovery] as [string, string],
+    ),
+  ]);
+
+  it.each(surfaces.filter(([, text]) => text.includes('ensembl_list_species')))(
+    '%s steers to nameContains',
+    (_surface, text) => {
+      expect(text).toContain('nameContains');
+    },
+  );
+
+  it('declares invalid_species with the nameContains route on every species-taking tool', () => {
+    const declaring = tools.filter((def) =>
+      def.errors?.some(
+        (e) => e.reason === 'invalid_species' && e.recovery.includes('nameContains'),
+      ),
+    );
+    expect(declaring.map((def) => def.name).sort()).toEqual([
+      'ensembl_get_homology',
+      'ensembl_get_sequence',
+      'ensembl_lookup_gene',
+      'ensembl_predict_variant',
+      'ensembl_query_region',
+    ]);
+  });
+
+  it('puts the route on the wire for an unrecognized species', async () => {
+    mockPredictVariantHgvs.mockRejectedValueOnce(
+      new Error("Can not find internal name for species 'homo_sapien'"),
+    );
+    const result = await runToolContract(ensemblPredictVariant, {
+      variant: 'ENST00000380152.8:c.2T>A',
+      species: 'homo_sapien',
+    });
+    expect(errorData(result)).toMatchObject({ reason: 'invalid_species' });
+    const hint = (errorData(result).recovery as { hint: string }).hint;
+    expect(hint).toContain('nameContains');
+    expect(contentText(result)).toContain(`Recovery: ${hint}`);
   });
 });
 
