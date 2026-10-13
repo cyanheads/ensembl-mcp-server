@@ -3,16 +3,30 @@
  * @module tests/resources/transcript.resource.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
+import {
+  createFetchMock,
+  createInMemoryStorage,
+  createMockContext,
+} from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { ensemblTranscriptResource } from '@/mcp-server/resources/definitions/transcript.resource.js';
+import { initEnsemblService } from '@/services/ensembl/ensembl-service.js';
 import type { TranscriptRecord } from '@/services/ensembl/types.js';
 
 const mockLookupTranscript = vi.fn();
 
-vi.mock('@/services/ensembl/ensembl-service.js', () => ({
-  getEnsemblService: () => ({ lookupTranscript: mockLookupTranscript }),
-}));
+/** When `real` is set, the resource runs against the real EnsemblService over a fetch fake. */
+const upstream = vi.hoisted(() => ({ real: false }));
+
+vi.mock('@/services/ensembl/ensembl-service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/ensembl/ensembl-service.js')>();
+  return {
+    ...actual,
+    getEnsemblService: () =>
+      upstream.real ? actual.getEnsemblService() : { lookupTranscript: mockLookupTranscript },
+  };
+});
 
 const canonicalTranscript: TranscriptRecord = {
   id: 'ENST00000380152',
@@ -91,5 +105,47 @@ describe('ensemblTranscriptResource', () => {
     const result = await ensemblTranscriptResource.handler(params, ctx);
     expect((result as TranscriptRecord).id).toBe('ENST00000000001');
     expect((result as TranscriptRecord).isCanonical).toBe(false);
+  });
+});
+
+describe('ensemblTranscriptResource versioned stable IDs (issue #41)', () => {
+  it('reads a versioned ID as the current transcript record', async () => {
+    const http = createFetchMock([
+      {
+        match: /^https:\/\/rest\.ensembl\.org\/lookup\/id\//,
+        // Like Ensembl, a versioned stable ID is not found, even for the current version.
+        respond: (request) =>
+          /\.\d+$/.test(request.url)
+            ? Response.json({ error: "ID 'ENST00000380152.8' not found" }, { status: 400 })
+            : Response.json({
+                id: 'ENST00000380152',
+                Parent: 'ENSG00000139618',
+                is_canonical: 1,
+              }),
+      },
+    ]);
+    http.install();
+    upstream.real = true;
+    initEnsemblService({} as AppConfig, createInMemoryStorage());
+    try {
+      const ctx = createMockContext({ errors: ensemblTranscriptResource.errors });
+      const params = ensemblTranscriptResource.params!.parse({ id: 'ENST00000380152.8' });
+      const result = await ensemblTranscriptResource.handler(params, ctx);
+      expect(result).toMatchObject({
+        id: 'ENST00000380152',
+        parentGeneId: 'ENSG00000139618',
+        isCanonical: true,
+      });
+      expect(http.calls.map((c) => c.request.url)).toEqual([
+        'https://rest.ensembl.org/lookup/id/ENST00000380152',
+      ]);
+    } finally {
+      upstream.real = false;
+      http.restore();
+    }
+  });
+
+  it('describes the version suffix as dropped', () => {
+    expect(ensemblTranscriptResource.params!.shape.id.description).toContain('dropped');
   });
 });

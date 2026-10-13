@@ -18,9 +18,9 @@ export const ensemblGeneResource = resource('ensembl://gene/{id}', {
     id: z
       .string()
       .describe(
-        'Ensembl gene stable ID (ENSG…). ' +
-          'Version suffix is optional — omitting it resolves to the current version. ' +
-          'Example: ENSG00000139618 or ENSG00000139618.7',
+        'Ensembl gene stable ID (ENSG…). A version suffix is optional and dropped before the ' +
+          'lookup, so either form returns the current version. ' +
+          'Example: ENSG00000139618 or ENSG00000139618.19',
       ),
   }),
 

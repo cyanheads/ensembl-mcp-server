@@ -3,16 +3,30 @@
  * @module tests/resources/gene.resource.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
+import {
+  createFetchMock,
+  createInMemoryStorage,
+  createMockContext,
+} from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { ensemblGeneResource } from '@/mcp-server/resources/definitions/gene.resource.js';
+import { initEnsemblService } from '@/services/ensembl/ensembl-service.js';
 import type { GeneRecord } from '@/services/ensembl/types.js';
 
 const mockLookupGeneById = vi.fn();
 
-vi.mock('@/services/ensembl/ensembl-service.js', () => ({
-  getEnsemblService: () => ({ lookupGeneById: mockLookupGeneById }),
-}));
+/** When `real` is set, the resource runs against the real EnsemblService over a fetch fake. */
+const upstream = vi.hoisted(() => ({ real: false }));
+
+vi.mock('@/services/ensembl/ensembl-service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/ensembl/ensembl-service.js')>();
+  return {
+    ...actual,
+    getEnsemblService: () =>
+      upstream.real ? actual.getEnsemblService() : { lookupGeneById: mockLookupGeneById },
+  };
+});
 
 const brca2: GeneRecord = {
   id: 'ENSG00000139618',
@@ -108,5 +122,39 @@ describe('ensemblGeneResource', () => {
     const params = ensemblGeneResource.params!.parse({ id: 'ENSG00000000001' });
     const result = await ensemblGeneResource.handler(params, ctx);
     expect((result as GeneRecord).id).toBe('ENSG00000000001');
+  });
+});
+
+describe('ensemblGeneResource versioned stable IDs (issue #41)', () => {
+  it('reads a versioned ID as the current gene record', async () => {
+    const http = createFetchMock([
+      {
+        match: /^https:\/\/rest\.ensembl\.org\/lookup\/id\//,
+        // Like Ensembl, a versioned stable ID is not found, even for the current version.
+        respond: (request) =>
+          /\.\d+\?/.test(request.url)
+            ? Response.json({ error: "ID 'ENSG00000139618.19' not found" }, { status: 400 })
+            : Response.json({ id: 'ENSG00000139618', display_name: 'BRCA2', version: 19 }),
+      },
+    ]);
+    http.install();
+    upstream.real = true;
+    initEnsemblService({} as AppConfig, createInMemoryStorage());
+    try {
+      const ctx = createMockContext({ errors: ensemblGeneResource.errors });
+      const params = ensemblGeneResource.params!.parse({ id: 'ENSG00000139618.19' });
+      const result = await ensemblGeneResource.handler(params, ctx);
+      expect(result).toMatchObject({ id: 'ENSG00000139618', displayName: 'BRCA2' });
+      expect(http.calls.map((c) => c.request.url)).toEqual([
+        'https://rest.ensembl.org/lookup/id/ENSG00000139618?expand=1',
+      ]);
+    } finally {
+      upstream.real = false;
+      http.restore();
+    }
+  });
+
+  it('describes the version suffix as dropped', () => {
+    expect(ensemblGeneResource.params!.shape.id.description).toContain('dropped');
   });
 });

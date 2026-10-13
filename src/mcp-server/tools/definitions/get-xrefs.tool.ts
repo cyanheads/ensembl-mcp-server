@@ -47,7 +47,8 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
       .trim()
       .min(1)
       .describe(
-        'Ensembl stable gene ID (ENSG…) or transcript ID (ENST…). ' +
+        'Ensembl stable gene ID (ENSG…) or transcript ID (ENST…). A version suffix on an ENS… ID ' +
+          '(ENSG00000139618.17) is dropped before the request. ' +
           'Use ensembl_lookup_gene to get the stable ID from a gene symbol. ' +
           'xrefs/id returns the full cross-reference set (56+ entries for well-annotated genes like BRCA2).',
       ),
@@ -71,7 +72,9 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
       )
       .describe('Cross-database references for the queried Ensembl ID.'),
     totalCount: z.number().describe('Total number of cross-references returned.'),
-    queriedId: z.string().describe('The Ensembl stable ID that was queried.'),
+    queriedId: z
+      .string()
+      .describe('The Ensembl stable ID as submitted, including any version suffix.'),
   }),
   enrichment: {
     notice: z.string().optional().describe('Guidance when no cross-references are found.'),
@@ -84,7 +87,8 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
       when: 'The Ensembl stable ID was not found or has no cross-references.',
       recovery:
         'Use ensembl_lookup_gene to verify the stable ID is current and valid. ' +
-        'Versioned IDs (ENSG00000139618.7) should work with or without the version suffix.',
+        'A version suffix is already dropped from an ENS… ID, so an ID still not found is ' +
+        'mistyped or retired.',
     },
   ],
 

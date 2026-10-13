@@ -18,8 +18,8 @@ export const ensemblTranscriptResource = resource('ensembl://transcript/{id}', {
     id: z
       .string()
       .describe(
-        'Ensembl transcript stable ID (ENST…). ' +
-          'Version suffix is optional — omitting it resolves to the current version. ' +
+        'Ensembl transcript stable ID (ENST…). A version suffix is optional and dropped before ' +
+          'the lookup, so either form returns the current version. ' +
           'Example: ENST00000380152 or ENST00000380152.8',
       ),
   }),

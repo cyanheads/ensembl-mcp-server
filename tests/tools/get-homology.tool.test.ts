@@ -3,20 +3,36 @@
  * @module tests/tools/get-homology.tool.test
  */
 
-import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { describe, expect, it, vi } from 'vitest';
+import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
+import {
+  createFetchMock,
+  createInMemoryStorage,
+  createMockContext,
+  type FetchMockHarness,
+  getEnrichment,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensemblGetHomology } from '@/mcp-server/tools/definitions/get-homology.tool.js';
+import { initEnsemblService } from '@/services/ensembl/ensembl-service.js';
 import type { HomologyEntry } from '@/services/ensembl/types.js';
 
 const mockGetHomologyBySymbol = vi.fn();
 const mockGetHomologyById = vi.fn();
 
-vi.mock('@/services/ensembl/ensembl-service.js', () => ({
-  getEnsemblService: () => ({
-    getHomologyBySymbol: mockGetHomologyBySymbol,
-    getHomologyById: mockGetHomologyById,
-  }),
-}));
+/** When `real` is set, the tool runs against the real EnsemblService over a fetch fake. */
+const upstream = vi.hoisted(() => ({ real: false }));
+
+vi.mock('@/services/ensembl/ensembl-service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/ensembl/ensembl-service.js')>();
+  return {
+    ...actual,
+    getEnsemblService: () =>
+      upstream.real
+        ? actual.getEnsemblService()
+        : { getHomologyBySymbol: mockGetHomologyBySymbol, getHomologyById: mockGetHomologyById },
+  };
+});
 
 const mouseOrtholog: HomologyEntry = {
   targetId: 'ENSMUSG00000041147',
@@ -350,5 +366,239 @@ describe('ensemblGetHomology blank species (issue #22)', () => {
     });
     expect(result.isError).toBeUndefined();
     expect(mockGetHomologyBySymbol).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
+  const HOMOLOGY = /^https:\/\/rest\.ensembl\.org\/homology\//;
+  const unknownSpecies = (name: string) => `Can not find internal name for species '${name}'`;
+  let http: FetchMockHarness;
+
+  beforeEach(() => {
+    upstream.real = true;
+    // Strict: an unrouted request throws, so an unexpected upstream call fails the test.
+    http = createFetchMock();
+    http.install();
+    initEnsemblService({} as AppConfig, createInMemoryStorage());
+  });
+
+  afterEach(() => {
+    http.restore();
+    upstream.real = false;
+  });
+
+  const recovery = (reason: string) =>
+    ensemblGetHomology.errors!.find((e) => e.reason === reason)!.recovery;
+
+  /** Concatenated text of every `content[]` block — what a `content`-only client reads. */
+  const contentText = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+    (result.content ?? [])
+      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n');
+
+  const rejectWith = (error: string) =>
+    http.route({ match: HOMOLOGY, respond: () => Response.json({ error }, { status: 400 }) });
+
+  it.each([
+    [
+      'species on the symbol path',
+      { symbol: 'BRCA2', species: 'not_a_species' },
+      'species',
+      'not_a_species',
+    ],
+    [
+      'species on the ID path',
+      { id: 'ENSG00000139618', species: 'not_a_species' },
+      'species',
+      'not_a_species',
+    ],
+    [
+      'target_species on the ID path',
+      { id: 'ENSG00000139618', target_species: 'not_a_target' },
+      'target_species',
+      'not_a_target',
+    ],
+    [
+      'name given as both species and target_species',
+      { id: 'ENSG00000139618', species: 'not_a_species', target_species: 'not_a_species' },
+      'species',
+      'not_a_species',
+    ],
+  ])('maps an unknown %s to invalid_species', async (_label, args, field, name) => {
+    rejectWith(unknownSpecies(name));
+    const result = await runToolContract(ensemblGetHomology, args);
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: -32007,
+        data: { reason: 'invalid_species', recovery: { hint: recovery('invalid_species') } },
+      },
+    });
+    expect(recovery('invalid_species')).toContain('ensembl_list_species');
+    const text = contentText(result);
+    expect(text).toContain(`Error: ${field} "${name}"`);
+    expect(text).toContain('(reason invalid_species)');
+    expect(http.calls).toHaveLength(1);
+  });
+
+  it('keeps the bare species-name envelope for an unknown symbol as not_found', async () => {
+    // Ensembl answers an unknown symbol with {"error":"<species>"} on HTTP 400.
+    rejectWith('homo_sapiens');
+    const result = await runToolContract(ensemblGetHomology, { symbol: 'NOTAGENEXYZ' });
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: -32001,
+        data: { reason: 'not_found', recovery: { hint: recovery('not_found') } },
+      },
+    });
+    expect(http.calls).toHaveLength(1);
+  });
+
+  it('maps an empty data array for an unknown ID to not_found (#40)', async () => {
+    // Ensembl answers an ID it does not hold in the source species with HTTP 200 {"data":[]}.
+    http.route({ match: HOMOLOGY, respond: () => Response.json({ data: [] }) });
+    const result = await runToolContract(ensemblGetHomology, { id: 'ENSG99999999999' });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: -32001,
+        data: { reason: 'not_found', recovery: { hint: recovery('not_found') } },
+      },
+    });
+    const text = contentText(result);
+    expect(text).toContain('Gene ID "ENSG99999999999" not found in homo_sapiens');
+    expect(text).toContain('(reason not_found)');
+    expect(http.calls).toHaveLength(1);
+  });
+
+  /** Mirrors Ensembl: a versioned stable ID answers {"data":[]}, the bare one its own entry. */
+  const routeVersionAware = () =>
+    http.route({
+      match: HOMOLOGY,
+      respond: (request) => {
+        const id = new URL(request.url).pathname.split('/').pop() ?? '';
+        if (/^ENS\w*\.\d+$/i.test(id)) return Response.json({ data: [] });
+        return Response.json({
+          data: [
+            {
+              id,
+              homologies: [
+                {
+                  type: 'ortholog_one2one',
+                  target: { id: 'ENSMUSG00000041147', species: 'mus_musculus', perc_id: 58.6 },
+                },
+              ],
+            },
+          ],
+        });
+      },
+    });
+
+  it.each([
+    ['ENSG00000139618.17', 'ENSG00000139618'],
+    ['ensg00000139618.19', 'ensg00000139618'],
+    ['ENSMUSG00000041147.4', 'ENSMUSG00000041147'],
+  ])('strips the version from %s before the request (#41)', async (submitted, bare) => {
+    routeVersionAware();
+    const result = await runToolContract(ensemblGetHomology, {
+      id: submitted,
+      target_species: 'mus_musculus',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      queryId: bare,
+      totalCount: 1,
+      homologs: [{ targetId: 'ENSMUSG00000041147', targetSpecies: 'mus_musculus' }],
+    });
+    expect(contentText(result)).toContain(`## Homologs of ${bare} (homo_sapiens)`);
+    expect(http.calls).toHaveLength(1);
+    expect(http.calls[0]?.request.url).toBe(
+      `https://rest.ensembl.org/homology/id/homo_sapiens/${bare}?type=orthologues&target_species=mus_musculus`,
+    );
+  });
+
+  it.each([
+    ['a dotted non-ENS ID', 'arabidopsis_thaliana', 'AT3G52430.1'],
+    ['an ENS ID whose number is not 11 digits', 'homo_sapiens', 'ENSG0013961.17'],
+  ])('forwards %s unchanged (#41)', async (_label, species, id) => {
+    routeVersionAware();
+    await runToolContract(ensemblGetHomology, { id, species });
+    expect(http.calls[0]?.request.url).toBe(
+      `https://rest.ensembl.org/homology/id/${species}/${id}?type=orthologues`,
+    );
+  });
+
+  it('checks a long ID for a version suffix in linear time (#41)', async () => {
+    // An unbroken uppercase run after ENS never reaches the digits, so every start fails.
+    http.route({ match: HOMOLOGY, respond: () => Response.json({ data: [] }) });
+    const cpuMicros = async (size: number) => {
+      const id = `ENS${'A'.repeat(size)}.1`;
+      const start = process.threadCpuUsage();
+      const result = await runToolContract(ensemblGetHomology, { id });
+      const used = process.threadCpuUsage(start);
+      expect(result.structuredContent).toMatchObject({ error: { data: { reason: 'not_found' } } });
+      return used.user + used.system;
+    };
+    await cpuMicros(5_000); // warm-up
+    const small = await cpuMicros(5_000);
+    const large = await cpuMicros(320_000);
+    // 64x the input: linear stays near 64x, quadratic would be ~4096x.
+    expect(large / Math.max(small, 1)).toBeLessThan(256);
+    expect(large).toBeLessThan(250_000);
+  });
+
+  it('keeps an empty success with its notice for a known gene with no homologs (#40)', async () => {
+    http.route({
+      match: HOMOLOGY,
+      respond: () => Response.json({ data: [{ id: 'ENSG00000139618', homologies: [] }] }),
+    });
+    const result = await runToolContract(ensemblGetHomology, {
+      id: 'ENSG00000139618',
+      target_species: 'saccharomyces_cerevisiae',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      homologs: [],
+      totalCount: 0,
+      queryId: 'ENSG00000139618',
+      querySpecies: 'homo_sapiens',
+      queryType: 'orthologues',
+      notice:
+        'No orthologues found for "ENSG00000139618" in homo_sapiens targeting ' +
+        'saccharomyces_cerevisiae. Try type=all or remove the target_species filter.',
+    });
+    expect(contentText(result)).toContain('No homologs found. Try type=all');
+    expect(http.calls[0]?.request.url).toBe(
+      'https://rest.ensembl.org/homology/id/homo_sapiens/ENSG00000139618?type=orthologues&target_species=saccharomyces_cerevisiae',
+    );
+  });
+
+  it('classifies a long echoed rejection in linear time', async () => {
+    const unit = 'can not find internal name for specie ';
+    const cpuMicros = async (size: number) => {
+      const error = unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+      http.route({
+        match: HOMOLOGY,
+        once: true,
+        respond: () => Response.json({ error }, { status: 400 }),
+      });
+      const start = process.threadCpuUsage();
+      const result = await runToolContract(ensemblGetHomology, { id: 'ENSG00000139618' });
+      const used = process.threadCpuUsage(start);
+      // Unrecognized: a ValidationError with no declared reason.
+      expect(result.structuredContent).toMatchObject({ error: { code: -32007 } });
+      return used.user + used.system;
+    };
+    await cpuMicros(5_000); // warm-up
+    const small = await cpuMicros(5_000);
+    const large = await cpuMicros(320_000);
+    // 64x the input: linear stays near 64x, quadratic would be ~4096x.
+    expect(large / Math.max(small, 1)).toBeLessThan(256);
+    expect(large).toBeLessThan(250_000);
   });
 });

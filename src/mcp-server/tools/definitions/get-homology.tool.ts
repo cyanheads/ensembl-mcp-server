@@ -10,6 +10,9 @@ import type { HomologyEntry } from '@/services/ensembl/types.js';
 
 const HOMOLOGY_TYPES = ['orthologues', 'paralogues', 'all'] as const;
 
+/** Ensembl's rejection of a source or target species it does not know. */
+const UNKNOWN_SPECIES = /can not find internal name for species/i;
+
 const HomologyEntrySchema = z.object({
   targetId: z.string().describe('Ensembl stable ID of the homologous gene in the target species.'),
   targetSpecies: z
@@ -70,6 +73,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       .optional()
       .describe(
         'Ensembl stable gene ID (e.g. ENSG00000139618). ' +
+          'A version suffix (ENSG00000139618.17) is accepted and dropped before the query. ' +
           'Use ensembl_lookup_gene to get the stable ID from a symbol. ' +
           'Cannot be combined with symbol.',
       ),
@@ -80,7 +84,8 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       .default('homo_sapiens')
       .describe(
         'Source species (the species the query gene belongs to) in Ensembl internal format. ' +
-          'Default is homo_sapiens. Use ensembl_list_species to discover valid values.',
+          'Default is homo_sapiens. Use ensembl_list_species with nameContains (a genus or common ' +
+          'name, e.g. mouse) to find valid values.',
       ),
     target_species: z
       .string()
@@ -88,7 +93,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       .describe(
         'Filter to homologs in a single target species (e.g. mus_musculus for mouse). ' +
           'Omit to return homologs across all available species. ' +
-          'Use ensembl_list_species to discover valid values.',
+          'Use ensembl_list_species with nameContains (a genus or common name) to find valid values.',
       ),
     type: z
       .enum(HOMOLOGY_TYPES)
@@ -149,10 +154,19 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
-      when: 'The gene symbol or stable ID was not found in Ensembl.',
+      when: 'The gene symbol or stable ID was not found in Ensembl for the source species.',
       recovery:
         'Verify the symbol spelling or use ensembl_lookup_gene to get the stable ID first. ' +
-        'Confirm the species is correct with ensembl_list_species.',
+        'Confirm the species with ensembl_list_species, setting nameContains to a genus or common name.',
+    },
+    {
+      reason: 'invalid_species',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The species or target_species string was not recognized by Ensembl.',
+      recovery:
+        'Find the internal names for species and target_species with ensembl_list_species, setting ' +
+        'nameContains to a genus or common name (e.g. mouse) and division for non-vertebrates. ' +
+        'Names are lowercase_underscore (mus_musculus, not Mouse).',
     },
     {
       reason: 'no_input',
@@ -194,18 +208,30 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     let queryId: string;
     let homologs: HomologyEntry[];
 
+    /** Ensembl quotes the one name it rejected, source or target species. */
+    const failOnUnknownSpecies = (msg: string) => {
+      if (!UNKNOWN_SPECIES.test(msg)) return;
+      const target = input.target_species;
+      const [field, name] =
+        target && !msg.includes(`'${input.species}'`) && msg.includes(`'${target}'`)
+          ? ['target_species', target]
+          : ['species', input.species];
+      throw ctx.fail('invalid_species', `${field} "${name}" not recognized by Ensembl.`);
+    };
+
     if (idTrimmed) {
       const result = await service
         .getHomologyById(idTrimmed, input.species, input.type, input.target_species, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
+          failOnUnknownSpecies(msg);
           if (/not found|no valid lookup|page not found/i.test(msg)) {
-            throw ctx.fail('not_found', `Gene ID "${idTrimmed}" not found in Ensembl.`);
+            throw ctx.fail('not_found', `Gene ID "${idTrimmed}" not found in ${input.species}.`);
           }
           throw err;
         });
       homologs = result.homologs;
-      // Prefer the stable ID the upstream resolved the query to; fall back to the submitted ID.
+      // The unversioned stable ID Ensembl answered for; the submitted ID only if it named none.
       queryId = result.resolvedQueryId ?? idTrimmed;
     } else {
       const submittedSymbol = symbolTrimmed ?? '';
@@ -213,6 +239,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
         .getHomologyBySymbol(submittedSymbol, input.species, input.type, input.target_species, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
+          failOnUnknownSpecies(msg);
           // Ensembl returns {"error":"<species_name>"} for invalid gene symbols in homology endpoint
           if (/not found|no valid lookup/i.test(msg) || msg === input.species) {
             throw ctx.fail(

@@ -3,22 +3,41 @@
  * @module tests/tools/predict-variant.tool.test
  */
 
-import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
+import {
+  createFetchMock,
+  createInMemoryStorage,
+  createMockContext,
+  type FetchMockHarness,
+  getEnrichment,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensemblPredictVariant } from '@/mcp-server/tools/definitions/predict-variant.tool.js';
+import { initEnsemblService } from '@/services/ensembl/ensembl-service.js';
 import type { VepRecord } from '@/services/ensembl/types.js';
 
 const mockPredictVariantHgvs = vi.fn();
 const mockPredictVariantRegion = vi.fn();
 const mockPredictVariantId = vi.fn();
 
-vi.mock('@/services/ensembl/ensembl-service.js', () => ({
-  getEnsemblService: () => ({
-    predictVariantHgvs: mockPredictVariantHgvs,
-    predictVariantRegion: mockPredictVariantRegion,
-    predictVariantId: mockPredictVariantId,
-  }),
-}));
+/** When `real` is set, the tool runs against the real EnsemblService over a fetch fake. */
+const upstream = vi.hoisted(() => ({ real: false }));
+
+vi.mock('@/services/ensembl/ensembl-service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/ensembl/ensembl-service.js')>();
+  return {
+    ...actual,
+    getEnsemblService: () =>
+      upstream.real
+        ? actual.getEnsemblService()
+        : {
+            predictVariantHgvs: mockPredictVariantHgvs,
+            predictVariantRegion: mockPredictVariantRegion,
+            predictVariantId: mockPredictVariantId,
+          },
+  };
+});
 
 const missenseResult: VepRecord = {
   input: 'ENST00000380152.8:c.2T>A',
@@ -427,5 +446,133 @@ describe('ensemblPredictVariant blank identifiers (issue #22)', () => {
 
   it('still defaults an omitted species to homo_sapiens', () => {
     expect(ensemblPredictVariant.input.parse({ variant: 'rs334' }).species).toBe('homo_sapiens');
+  });
+});
+
+describe('ensemblPredictVariant through EnsemblService (issues #34, #37)', () => {
+  const VEP = /^https:\/\/rest\.ensembl\.org\/vep\//;
+  let http: FetchMockHarness;
+
+  beforeEach(() => {
+    upstream.real = true;
+    // Strict: an unrouted request throws, so an unexpected upstream call fails the test.
+    http = createFetchMock();
+    http.install();
+    initEnsemblService({} as AppConfig, createInMemoryStorage());
+  });
+
+  afterEach(() => {
+    http.restore();
+    upstream.real = false;
+  });
+
+  const recovery = (reason: string) =>
+    ensemblPredictVariant.errors!.find((e) => e.reason === reason)!.recovery;
+
+  /** Concatenated text of every `content[]` block — what a `content`-only client reads. */
+  const contentText = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+    (result.content ?? [])
+      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n');
+
+  const rejectWith = (error: string) =>
+    http.route({ match: VEP, respond: () => Response.json({ error }, { status: 400 }) });
+
+  it.each([
+    [
+      'an allele that matches the reference',
+      '7:140753336:140753336:1/A',
+      'request for consequence of [A] matches reference [A]',
+      'invalid_notation',
+      -32007,
+    ],
+    [
+      'an allele that is not a base or SO term',
+      '7:140753336:140753336:1/Z',
+      'Allele must be A,T,G,C or SO term [got: Z]',
+      'invalid_notation',
+      -32007,
+    ],
+    [
+      'a sequence region the assembly lacks',
+      '1000:100:100:1/A',
+      'No slice found for location 1000',
+      'not_found',
+      -32001,
+    ],
+  ])(
+    'maps the region+allele rejection of %s to its declared reason',
+    async (_label, variant, error, reason, code) => {
+      rejectWith(error);
+      const result = await runToolContract(ensemblPredictVariant, { variant });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: { code, data: { reason, recovery: { hint: recovery(reason) } } },
+      });
+      const text = contentText(result);
+      expect(text).toContain(error);
+      expect(text).toContain(`Recovery: ${recovery(reason)}`);
+      expect(text).toContain(`(reason ${reason})`);
+      // A 400 input rejection is answered once, never retried as an outage.
+      expect(http.calls).toHaveLength(1);
+      expect(http.calls[0]?.request.url).toBe(
+        `https://rest.ensembl.org/vep/homo_sapiens/region/${encodeURIComponent(variant.split('/')[0]!)}/${variant.split('/')[1]}`,
+      );
+    },
+  );
+
+  it.each([
+    ['region+allele', '7:140753336:140753336:1/T', '/region/'],
+    ['HGVS', 'ENST00000380152.8:c.2T>A', '/hgvs/'],
+    ['rsID', 'rs334', '/id/'],
+  ])('maps an unknown species on the %s path to invalid_species', async (_path, variant, route) => {
+    rejectWith("Can not find internal name for species 'not_a_species'");
+    const result = await runToolContract(ensemblPredictVariant, {
+      variant,
+      species: 'not_a_species',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: -32007,
+        data: { reason: 'invalid_species', recovery: { hint: recovery('invalid_species') } },
+      },
+    });
+    expect(recovery('invalid_species')).toContain('ensembl_list_species');
+    const text = contentText(result);
+    expect(text).toContain('not_a_species');
+    expect(text).toContain('(reason invalid_species)');
+    expect(http.calls).toHaveLength(1);
+    expect(http.calls[0]?.request.url).toContain(`/vep/not_a_species${route}`);
+  });
+
+  it('classifies a long echoed rejection in linear time', async () => {
+    // Fragments of every pattern the region path and the service test, none completed.
+    const unit = 'matches referenc allele must b no slice foun internal name for specie ';
+    const cpuMicros = async (size: number) => {
+      const error = unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+      http.route({
+        match: VEP,
+        once: true,
+        respond: () => Response.json({ error }, { status: 400 }),
+      });
+      const start = process.threadCpuUsage();
+      const result = await runToolContract(ensemblPredictVariant, {
+        variant: '7:140753336:140753336:1/T',
+      });
+      const used = process.threadCpuUsage(start);
+      // Unrecognized: a ValidationError with no declared reason.
+      expect(result.structuredContent).toMatchObject({ error: { code: -32007 } });
+      return used.user + used.system;
+    };
+    await cpuMicros(5_000); // warm-up
+    const small = await cpuMicros(5_000);
+    const large = await cpuMicros(320_000);
+    // 64x the input: linear stays near 64x, quadratic would be ~4096x.
+    expect(large / Math.max(small, 1)).toBeLessThan(256);
+    expect(large).toBeLessThan(250_000);
   });
 });

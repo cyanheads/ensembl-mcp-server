@@ -8,6 +8,9 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 import type { VepRecord } from '@/services/ensembl/types.js';
 
+/** Ensembl's rejection of a species it does not know, on every VEP endpoint. */
+const UNKNOWN_SPECIES = /can not find internal name for species/i;
+
 const TranscriptConsequenceSchema = z.object({
   transcriptId: z
     .string()
@@ -170,7 +173,8 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
       .describe(
         'Species in Ensembl internal format. Default is homo_sapiens. ' +
           'For non-human variants, set the appropriate species ' +
-          '(e.g. mus_musculus for mouse). Use ensembl_list_species to discover valid values.',
+          '(e.g. mus_musculus for mouse). Use ensembl_list_species with nameContains (a genus or ' +
+          'common name) to find valid values.',
       ),
     max_transcript_consequences: z
       .number()
@@ -249,6 +253,15 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
         'Verify the chromosome and position are within the target assembly bounds. ' +
         'Use ensembl_query_region to confirm the genomic context around the position.',
     },
+    {
+      reason: 'invalid_species',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The species string was not recognized by Ensembl.',
+      recovery:
+        'Find the internal name with ensembl_list_species, setting nameContains to a genus or ' +
+        'common name (e.g. mouse) and division for non-vertebrates. Names are lowercase_underscore ' +
+        '(homo_sapiens, not Human).',
+    },
   ],
 
   async handler(input, ctx) {
@@ -260,6 +273,12 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
     const regionAllelePattern = /^([^:]+):(\d+):(\d+):(-?1)\/(.+)$/;
     const rsIdPattern = /^rs\d+$/i;
     const regionMatch = input.variant.match(regionAllelePattern);
+
+    const failOnUnknownSpecies = (msg: string) => {
+      if (UNKNOWN_SPECIES.test(msg)) {
+        throw ctx.fail('invalid_species', `Species "${input.species}" not recognized by Ensembl.`);
+      }
+    };
 
     let results: VepRecord[];
     if (regionMatch) {
@@ -283,13 +302,15 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
         )
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
-          if (/invalid|unrecognized|parse|malformed/i.test(msg)) {
+          failOnUnknownSpecies(msg);
+          // "… matches reference [A]" and "Allele must be A,T,G,C or SO term" reject the allele.
+          if (/invalid|unrecognized|parse|malformed|matches reference|allele must be/i.test(msg)) {
             throw ctx.fail(
               'invalid_notation',
               `Invalid region+allele notation "${input.variant}": ${msg}`,
             );
           }
-          if (/not found|outside/i.test(msg)) {
+          if (/not found|outside|no slice found/i.test(msg)) {
             throw ctx.fail('not_found', `Variant location not found: ${msg}`);
           }
           throw err;
@@ -299,6 +320,7 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
         .predictVariantId(input.variant, input.species, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
+          failOnUnknownSpecies(msg);
           // A well-formed rsID that dbSNP does not know reports "No variant found with ID …".
           if (/not found|no variant|unknown variant/i.test(msg)) {
             throw ctx.fail('not_found', `Variant identifier ${input.variant} not found in dbSNP.`);
@@ -316,6 +338,7 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
         .predictVariantHgvs(input.variant, input.species, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
+          failOnUnknownSpecies(msg);
           if (/invalid|unrecognized|parse|malformed|hgvs/i.test(msg)) {
             throw ctx.fail('invalid_notation', `Invalid HGVS notation "${input.variant}": ${msg}`);
           }
