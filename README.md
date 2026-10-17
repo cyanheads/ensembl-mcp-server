@@ -29,7 +29,7 @@
 
 ## Overview
 
-Gene, sequence, and variant data for vertebrates and other model organisms from the Ensembl REST API. Look up genes, fetch sequences, predict variant consequences, find orthologs, and cross-reference external databases from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+Gene, sequence, and variant data for vertebrates and other model organisms from the Ensembl REST API. Look up genes, fetch sequences, predict variant consequences, find orthologs, and cross-reference external databases.
 
 ### Tools
 
@@ -75,16 +75,15 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 ### `ensembl_lookup_gene` <sub>tool</sub>
 
 - Exactly one of `symbol` (+ `species`, default `homo_sapiens`), `id`, `ids`, or `symbols` (batches up to 20); `expand_transcripts` (default `false`) adds the transcript list with biotype and canonical flag
-- A symbol that is not a current gene name falls back to synonyms and former symbols (`HER2` → `ERBB2`, maize `TB1` → `TCP1`), reported as `matchedAlias`; patch and haplotype copies are set aside, and a name still shared by several genes (`MDR1`) returns `ambiguous` with the candidates to retry by `id`
-- A single lookup returns `gene` (or `ambiguous`); a batch returns `succeeded` items carrying the submitted `query` (an ID as written, version included; IDs that differ only by version are separate items with the same record) and `failed` items with `query`, `reason` (`not_found`, `ambiguous` with `candidates`, or `unavailable` when Ensembl did not answer the symbol's synonym lookup after retries), `error`, and `recovery`, instead of failing the call. A `symbols` batch on an unrecognized species throws `invalid_species`. Errors: `not_found`, `invalid_species`, `no_input`, `conflicting_input`
+- A symbol that is not a current gene name falls back to synonyms and former symbols (`HER2` → `ERBB2`), reported as `matchedAlias`; a name shared by several genes (`MDR1`) returns `ambiguous` with candidates to retry by `id`
+- A single lookup returns `gene` (or `ambiguous`); a batch returns `succeeded` items carrying the submitted `query` and `failed` items with `query`, `reason` (`not_found`, `ambiguous` with `candidates`, or `unavailable`), `error`, and `recovery`, instead of failing the call. Errors: `not_found`, `invalid_species`, `no_input`, `conflicting_input`
 
 ---
 
 ### `ensembl_get_sequence` <sub>tool</sub>
 
 - A stable ID (`ENSG…`/`ENST…`/`ENSP…`) or a region (`species:chr:start-end`, or `chr:start-end` with `species`; at most 10,000,000 bases); `type` is `genomic` (default), `cdna`, `cds`, or `protein` — `cdna` and `cds` from a transcript ID only, `protein` from a transcript or protein ID; `expand_5prime`/`expand_3prime` add flanking bases
-- Regions also take `start..end` and a `:1`/`:-1` strand suffix (`1:1000000-1000020:-1` returns the reverse complement); a species prefix in `id` wins over `species`, and the mitochondrion is `MT` in vertebrates (`mitochondrion_genome` in Drosophila, `MtDNA` in C. elegans)
-- `M` and `chrM` (any case) are forwarded only where Ensembl resolves them to the mitochondrion — Drosophila `M`/`chrM`, human and mouse `CHRM` — and otherwise rejected as `invalid_region` naming the species' mitochondrion; human `chrM` would otherwise return an unrelated patch scaffold. One cached `/info/assembly` lookup per species and spelling decides it
+- Regions take a `:1`/`:-1` strand suffix (`1:1000000-1000020:-1` returns the reverse complement); the mitochondrion is `MT` in vertebrates (`mitochondrion_genome` in Drosophila, `MtDNA` in C. elegans), and `M`/`chrM` are rejected as `invalid_region` where they would not resolve to it
 - Returns a window set by `offset` (default `0`) and `max_length` (default `10000`, `0` uncapped); `length` is the full sequence length, and `truncated`/`nextOffset` say where to resume
 - Errors: `not_found`, `type_mismatch` (also a protein ID asked for `genomic`/`cdna`/`cds`, or a non-coding transcript asked for `protein`/`cds`), `invalid_species`, `missing_species`, `invalid_region` (also an id with a colon that is not a valid region)
 
@@ -92,7 +91,7 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 
 ### `ensembl_query_region` <sub>tool</sub>
 
-- `region` as `species:chr:start-end`, or `chr:start-end` with `species` (a species prefix wins over `species` and is not forwarded); at most 5,000,000 bases; reversed coordinates are rejected before any request, and `M`/`chrM` as `ensembl_get_sequence` treats them — use `MT` in vertebrates, `mitochondrion_genome` in Drosophila, `MtDNA` in C. elegans; `feature` defaults to `["gene"]` and also accepts `transcript`, `variation`, `regulatory`, `exon`; optional `biotype` filter
+- `region` as `species:chr:start-end`, or `chr:start-end` with `species` (at most 5,000,000 bases; reversed coordinates are rejected; mitochondrion naming as in `ensembl_get_sequence`); `feature` defaults to `["gene"]` and also accepts `transcript`, `variation`, `regulatory`, `exon`; optional `biotype` filter
 - `max_results` caps the list (default `100`, `0` uncapped) while `totalCount` reports the true count; `assemblyName` names the coordinates' assembly, and exon rows carry `parentId` and `rank`. Errors: `invalid_region`, `invalid_species`, `missing_species`
 
 ---
@@ -160,17 +159,17 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 Ensembl-specific:
 
 - Keyless REST API — no API key required; Ensembl REST is fully public at 55,000 req/hr
-- Rate-limit-aware service layer: retries 429 honoring `Retry-After`, and retries transient 5xx, HTML error pages, and Ensembl database outages
-- Bounded upstream calls: 180 s per attempt (headers and body) and 240 s per call, retries included, so a stalled Ensembl fails with a timeout instead of hanging
-- Batch POST endpoints used throughout — `POST /lookup/id` and `POST /lookup/symbol/{species}` (up to 1,000 items each upstream) reduce N+1 round trips in multi-gene workflows
+- Retries 429 responses (honoring `Retry-After`) and transient 5xx errors
+- Upstream calls time out at 180 s per attempt and 240 s per call, so a stalled Ensembl fails instead of hanging
+- Batch lookups use `POST /lookup/id` and `POST /lookup/symbol/{species}` to avoid N+1 round trips
 - GRCh37 legacy support via `ENSEMBL_BASE_URL` — point the entire server at `https://grch37.rest.ensembl.org` for clinical workflows on the older assembly
 - All coordinate-bearing responses echo the assembly name so agents never see a bare genomic position without assembly context
 
 Agent-friendly output:
 
-- `ensembl_get_sequence` returns sequences in bounded windows (10,000 characters by default) with the full length and a `nextOffset` to continue, so a long gene or locus never lands in one response unasked
-- `ensembl_list_species` is explicitly the discovery step — tool descriptions call out the opaque internal-name format and direct agents to it before using species-dependent tools; it returns 50 species per page by default with a `nextOffset` to continue, so even the ~1,500-species Fungi division stays bounded
-- Cross-tool chaining made explicit: xref IDs from `ensembl_get_xrefs` are described as inputs for protein and literature servers; the `ensembl_gene_dossier` prompt sequences 6 of the 7 tools into one research workflow
+- `ensembl_get_sequence` returns bounded windows (10,000 characters by default) with the full length and a `nextOffset` to continue
+- `ensembl_list_species` is the discovery step for internal species names, 50 per page with a `nextOffset`
+- Xref IDs from `ensembl_get_xrefs` are described as inputs for protein and literature servers; the `ensembl_gene_dossier` prompt chains 6 of the 7 tools
 
 ## Getting started
 
@@ -294,7 +293,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http` | `stdio` |
 | `MCP_HTTP_PORT` | HTTP server port | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path | `/mcp` |
-| `MCP_SESSION_MODE` | HTTP session mode: `auto`, `stateful`, or `stateless`. Schema default `auto` resolves to stateful; this server explicitly uses stateless. | `stateless` |
+| `MCP_SESSION_MODE` | HTTP session mode: `auto`, `stateful`, or `stateless` | `stateless` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth` | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.) | `info` |
 | `LOGS_DIR` | Directory for log files (Node.js only) | `<project-root>/logs` |
