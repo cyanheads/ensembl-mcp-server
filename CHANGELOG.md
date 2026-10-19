@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.1](changelog/0.6.x/0.6.1.md) — 2026-10-18
+
+Preserve variant annotations and bounded lookup results
+
 ## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-10-13 · ⚠️ Breaking
 
 Pages ensembl_list_species and caps the species resources at 50, resolves gene symbols through Ensembl aliases with typed batch results, adds one region grammar to ensembl_get_sequence and ensembl_query_region, and classifies Ensembl error envelopes instead of reporting outages as not found.
