@@ -53,6 +53,94 @@ const entrezXref: XrefEntry = {
 };
 
 describe('ensemblGetXrefs', () => {
+  it('returns captured RefSeq child-object references only in all-levels scope', async () => {
+    const http = createFetchMock();
+    http.install();
+    upstream.real = true;
+    initEnsemblService({} as AppConfig, createInMemoryStorage());
+    http.route({
+      match: /^https:\/\/rest\.ensembl\.org\/xrefs\/id\//,
+      respond: (request) =>
+        Response.json(
+          new URL(request.url).searchParams.get('all_levels') === '1'
+            ? [
+                {
+                  dbname: 'RefSeq_mRNA',
+                  db_display_name: 'RefSeq mRNA',
+                  primary_id: 'NM_000059',
+                  display_id: 'NM_000059.4',
+                  description: null,
+                },
+              ]
+            : [],
+        ),
+    });
+    try {
+      const direct = await runToolContract(ensemblGetXrefs, {
+        id: 'ENSG00000139618',
+        dbname: 'RefSeq_mRNA',
+      });
+      expect(direct.structuredContent).toMatchObject({ xrefs: [], totalCount: 0 });
+      const all = await runToolContract(ensemblGetXrefs, {
+        id: 'ENSG00000139618',
+        dbname: 'RefSeq_mRNA',
+        all_levels: true,
+      });
+      expect(all.structuredContent).toMatchObject({
+        totalCount: 1,
+        xrefs: [{ primaryId: 'NM_000059', displayId: 'NM_000059.4' }],
+      });
+      expect(all.structuredContent).not.toHaveProperty('notice');
+      expect(
+        all.content?.map((block) => (block.type === 'text' ? block.text : '')).join('\n'),
+      ).toContain('NM_000059.4');
+    } finally {
+      http.restore();
+      upstream.real = false;
+    }
+  });
+  it('characterizes default object-level scope before adding hierarchy selection', async () => {
+    mockGetXrefsById.mockResolvedValueOnce([hgncXref]);
+    const result = await runToolContract(ensemblGetXrefs, { id: 'ENSG00000139618' });
+    expect(result.structuredContent).toMatchObject({ totalCount: 1, xrefs: [hgncXref] });
+    expect(JSON.stringify(result.content)).toContain('HGNC:1101');
+  });
+
+  it.each([undefined, false, true])(
+    'forwards all_levels=%s independently of dbname',
+    async (all_levels) => {
+      const http = createFetchMock();
+      upstream.real = true;
+      http.install();
+      initEnsemblService({} as AppConfig, createInMemoryStorage());
+      http.route({
+        match: /^https:\/\/rest\.ensembl\.org\/xrefs\/id\//,
+        respond: () => Response.json([]),
+      });
+      try {
+        for (const dbname of [undefined, 'RefSeq_mRNA']) {
+          const result = await runToolContract(ensemblGetXrefs, {
+            id: 'ENSG00000139618',
+            dbname,
+            all_levels,
+          } as never);
+          expect(result.isError).toBeUndefined();
+          const url = new URL(http.calls.at(-1)!.request.url);
+          expect(url.searchParams.get('all_levels')).toBe(all_levels ? '1' : null);
+          expect(url.searchParams.get('external_db')).toBe(dbname ?? null);
+          expect(result.structuredContent).toMatchObject({ totalCount: 0, xrefs: [] });
+          const notice = String((result.structuredContent as { notice?: string }).notice);
+          expect(notice).toContain(all_levels ? 'feature ID' : 'all_levels=true');
+          expect(
+            result.content?.map((b) => (b.type === 'text' ? b.text : '')).join('\n'),
+          ).toContain(notice);
+        }
+      } finally {
+        http.restore();
+        upstream.real = false;
+      }
+    },
+  );
   it('returns all cross-references for a stable ID', async () => {
     mockGetXrefsById.mockResolvedValueOnce([hgncXref, uniprotXref, entrezXref]);
     const ctx = createMockContext({ errors: ensemblGetXrefs.errors });
@@ -68,7 +156,12 @@ describe('ensemblGetXrefs', () => {
     const ctx = createMockContext({ errors: ensemblGetXrefs.errors });
     const input = ensemblGetXrefs.input.parse({ id: 'ENSG00000139618', dbname: 'HGNC' });
     const result = await ensemblGetXrefs.handler(input, ctx);
-    expect(mockGetXrefsById).toHaveBeenCalledWith('ENSG00000139618', 'HGNC', expect.anything());
+    expect(mockGetXrefsById).toHaveBeenCalledWith(
+      'ENSG00000139618',
+      'HGNC',
+      expect.anything(),
+      false,
+    );
     expect(result.xrefs).toHaveLength(1);
     expect(result.xrefs[0]!.dbname).toBe('HGNC');
   });
@@ -112,7 +205,12 @@ describe('ensemblGetXrefs', () => {
     const ctx = createMockContext({ errors: ensemblGetXrefs.errors });
     const input = ensemblGetXrefs.input.parse({ id: 'ENSG00000139618', dbname: '   ' });
     await ensemblGetXrefs.handler(input, ctx);
-    expect(mockGetXrefsById).toHaveBeenCalledWith('ENSG00000139618', undefined, expect.anything());
+    expect(mockGetXrefsById).toHaveBeenCalledWith(
+      'ENSG00000139618',
+      undefined,
+      expect.anything(),
+      false,
+    );
   });
 
   it('formats xrefs grouped by database', () => {
@@ -162,7 +260,12 @@ describe('ensemblGetXrefs blank identifiers (issue #22)', () => {
     mockGetXrefsById.mockResolvedValueOnce([hgncXref]);
     const result = await runToolContract(ensemblGetXrefs, { id: 'ENSG00000139618', dbname: '' });
     expect(result.isError).toBeUndefined();
-    expect(mockGetXrefsById).toHaveBeenCalledWith('ENSG00000139618', undefined, expect.anything());
+    expect(mockGetXrefsById).toHaveBeenCalledWith(
+      'ENSG00000139618',
+      undefined,
+      expect.anything(),
+      false,
+    );
   });
 });
 

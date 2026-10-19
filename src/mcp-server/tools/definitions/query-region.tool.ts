@@ -122,6 +122,7 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
       .optional()
       .describe(
         'Optional biotype filter (e.g. protein_coding, lncRNA, SNV). ' +
+          'Case-sensitive (lncRNA, not lncrna); remove the filter to inspect all matching feature types. ' +
           'Applied server-side by Ensembl. Not all feature types support biotype filtering.',
       ),
     max_results: z
@@ -304,7 +305,10 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     if (totalCount === 0) {
       fragments.push(
         `No ${input.feature.join(', ')} features found in ${region} for ${species}. ` +
-          'The region may be intergenic, or the coordinates may not cover the intended locus. ' +
+          (input.biotype
+            ? `The biotype filter "${input.biotype}" may exclude matching features. ` +
+              'Biotypes are case-sensitive (protein_coding, lncRNA). Remove the biotype filter to inspect the region. '
+            : 'The region may be intergenic, or the coordinates may not cover the intended locus. ') +
           'Use ensembl_lookup_gene to confirm the locus coordinates.',
       );
     }

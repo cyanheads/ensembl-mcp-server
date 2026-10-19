@@ -74,9 +74,10 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 
 ### `ensembl_lookup_gene` <sub>tool</sub>
 
-- Exactly one of `symbol` (+ `species`, default `homo_sapiens`), `id`, `ids`, or `symbols` (batches up to 20); `expand_transcripts` (default `false`) adds the transcript list with biotype and canonical flag
+- Exactly one of `symbol` (+ `species`, default `homo_sapiens`), `id`, `ids`, or `symbols` (up to 1,000 submitted items; first 20 distinct trimmed queries processed); `expand_transcripts` (default `false`) adds the transcript list with biotype and canonical flag
+- `canonicalTranscript` identifies the canonical transcript without expansion; transcript-ID lookups also return `parentGeneId`. Expanded transcripts include `maneSelect` RefSeq accessions when available (BRCA2: `ENST00000380152.8`, `NM_000059.4`)
 - A symbol that is not a current gene name falls back to synonyms and former symbols (`HER2` → `ERBB2`), reported as `matchedAlias`; a name shared by several genes (`MDR1`) returns `ambiguous` with candidates to retry by `id`
-- A single lookup returns `gene` (or `ambiguous`); a batch returns `succeeded` items carrying the submitted `query` and `failed` items with `query`, `reason` (`not_found`, `ambiguous` with `candidates`, or `unavailable`), `error`, and `recovery`, instead of failing the call. Errors: `not_found`, `invalid_species`, `no_input`, `conflicting_input`
+- A single lookup returns `gene` (or `ambiguous`); a `batch` returns ordered `succeeded` items carrying the submitted `query`, `failed` items with `query`, `reason` (`not_found`, `ambiguous` with `candidates`, or `unavailable`), `error`, and `recovery`, and `omitted` queries past the processing cap. Omitted queries are never requested or reported as failed; resubmit them separately. Errors: `not_found`, `invalid_species`, `no_input`, `conflicting_input`
 
 ---
 
@@ -91,7 +92,7 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 
 ### `ensembl_query_region` <sub>tool</sub>
 
-- `region` as `species:chr:start-end`, or `chr:start-end` with `species` (at most 5,000,000 bases; reversed coordinates are rejected; mitochondrion naming as in `ensembl_get_sequence`); `feature` defaults to `["gene"]` and also accepts `transcript`, `variation`, `regulatory`, `exon`; optional `biotype` filter
+- `region` as `species:chr:start-end`, or `chr:start-end` with `species` (at most 5,000,000 bases; reversed coordinates are rejected; mitochondrion naming as in `ensembl_get_sequence`); `feature` defaults to `["gene"]` and also accepts `transcript`, `variation`, `regulatory`, `exon`; optional case-sensitive `biotype` filter (`protein_coding`, `lncRNA`). An empty filtered result suggests removing the filter without inferring the locus is intergenic
 - `max_results` caps the list (default `100`, `0` uncapped) while `totalCount` reports the true count; `assemblyName` names the coordinates' assembly, and exon rows carry `parentId` and `rank`. Errors: `invalid_region`, `invalid_species`, `missing_species`
 
 ---
@@ -100,6 +101,8 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 
 - `variant` as HGVS (transcript-relative or genomic), region+allele (`chr:start:end:strand/allele`), or a dbSNP rsID
 - Returns the most severe consequence, per-transcript impact (HIGH/MODERATE/LOW/MODIFIER), and colocated known variants with clinical significance. Errors: `invalid_notation`, `not_found`, `invalid_species`
+- Requests HGVS, canonical and MANE annotations on every input route. Consequences retain `variantAllele`, optional `canonical`/`maneSelect`, HGVS and available SIFT/PolyPhen prediction-score pairs; records retain `alleleString`
+- Colocated `clinicalSignificance` is aggregate, not a classification of the submitted allele. `clinicalSignificanceByAllele` preserves explicit per-allele terms and `clinicalSignificanceReferenceAllele` identifies their reference allele; absent annotations remain omitted
 - `max_transcript_consequences` and `max_pubmed_ids_per_variant` (default `10` each, `0` uncapped; `include_all_colocated_pubmed` lifts the PubMed cap) bound the result, while `transcriptConsequencesTotal` and `pubmedTotal` report the full counts
 
 ---
@@ -108,13 +111,14 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 
 - Exactly one of `symbol` (+ `species`, default `homo_sapiens`) or `id`; `type` is `orthologues` (default), `paralogues`, or `all`; optional `target_species` filter
 - `max_results` caps the list (default `25`, `0` uncapped) while `totalCount` reports the true count. Errors: `not_found`, `invalid_species` (unknown `species` or `target_species`), `no_input`, `conflicting_input`
+- Each row retains optional `targetProteinId` for `ensembl_get_sequence` with `type:"protein"`. Optional `targetSymbol` comes from a lookup of the returned rows' distinct gene IDs, in chunks of at most 1,000, with one five-second budget bounded by the call's remaining deadline and no retries. Missing names or failed lookups retain every primary homolog with a notice; cancellation still aborts
 
 ---
 
 ### `ensembl_get_xrefs` <sub>tool</sub>
 
-- `id` (`ENSG…`/`ENST…`) required; optional `dbname` filter (e.g. `HGNC`, `Uniprot_gn`, `EntrezGene`, `MIM_GENE`, `RefSeq_mRNA`, `Reactome`, `GO`)
-- Returns the full cross-reference set (56+ entries for a well-annotated gene such as BRCA2). Errors: `not_found`
+- `id` (`ENSG…`/`ENST…`/`ENSP…`) required; optional `dbname` filter (e.g. `HGNC`, `Uniprot_gn`, `EntrezGene`, `MIM_GENE`, `RefSeq_mRNA`, `Reactome_gene` for gene pathways, `Reactome` for translation pathways, `GO`)
+- Default `all_levels:false` queries the requested object's level. Set `all_levels:true` to include a gene's transcript and translation references, independently of `dbname`; for example, gene-level `RefSeq_mRNA` may need this or a transcript ID. Empty lists remain successful with `totalCount:0`. Errors: `not_found`
 
 ---
 

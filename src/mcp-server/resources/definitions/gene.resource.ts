@@ -10,7 +10,7 @@ import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 export const ensemblGeneResource = resource('ensembl://gene/{id}', {
   name: 'Ensembl Gene',
   description:
-    'Gene record by Ensembl stable ID (ENSG…). Returns location, biotype, description, and transcript list. ' +
+    'Gene record by Ensembl stable ID (ENSG…). Returns location, biotype, description, canonicalTranscript, and a transcript list with MANE Select accessions when available. ' +
     'Stable, injectable context for multi-step workflows. ' +
     'Use ensembl_lookup_gene to resolve a gene symbol to the stable ID first.',
   mimeType: 'application/json',

@@ -260,7 +260,12 @@ describe('tool wire contract — input pre-validation', () => {
 
     expect(result.isError).toBeUndefined();
     // The alias reached the service as the declared `dbname` filter, not as undefined.
-    expect(mockGetXrefsById).toHaveBeenCalledWith('ENSG00000139618', 'HGNC', expect.anything());
+    expect(mockGetXrefsById).toHaveBeenCalledWith(
+      'ENSG00000139618',
+      'HGNC',
+      expect.anything(),
+      false,
+    );
   });
 
   it('rewrites a snake_case alias for a camelCase-spelling caller', async () => {

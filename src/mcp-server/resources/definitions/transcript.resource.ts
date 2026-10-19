@@ -11,8 +11,8 @@ export const ensemblTranscriptResource = resource('ensembl://transcript/{id}', {
   name: 'Ensembl Transcript',
   description:
     'Transcript record by Ensembl stable ID (ENST…). Returns parent gene, location, biotype, ' +
-    'canonical flag, and length. Use ensembl_lookup_gene with expand_transcripts=true to discover ' +
-    'transcript IDs for a given gene, then fetch this resource for stable, injectable context.',
+    'canonical flag, and length. Use canonicalTranscript from ensembl_lookup_gene, or ' +
+    'expand_transcripts=true for all transcript IDs and MANE Select accessions, then fetch this resource for stable, injectable context.',
   mimeType: 'application/json',
   params: z.object({
     id: z
@@ -31,7 +31,7 @@ export const ensemblTranscriptResource = resource('ensembl://transcript/{id}', {
       when: 'The transcript stable ID was not found in Ensembl.',
       recovery:
         'Verify the ID format (ENST followed by 11 digits, optional .version suffix). ' +
-        'Use ensembl_lookup_gene with expand_transcripts=true to get transcript IDs.',
+        'Use canonicalTranscript from ensembl_lookup_gene or expand_transcripts=true for all transcript IDs.',
     },
   ],
 

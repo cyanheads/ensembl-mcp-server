@@ -30,7 +30,11 @@ vi.mock('@/services/ensembl/ensembl-service.js', async (importOriginal) => {
     getEnsemblService: () =>
       upstream.real
         ? actual.getEnsemblService()
-        : { getHomologyBySymbol: mockGetHomologyBySymbol, getHomologyById: mockGetHomologyById },
+        : {
+            getHomologyBySymbol: mockGetHomologyBySymbol,
+            getHomologyById: mockGetHomologyById,
+            getHomologyTargetSymbols: async () => new Map<string, string>(),
+          },
   };
 });
 
@@ -378,6 +382,7 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
     upstream.real = true;
     // Strict: an unrouted request throws, so an unexpected upstream call fails the test.
     http = createFetchMock();
+    http.route({ match: 'https://rest.ensembl.org/lookup/id', respond: () => Response.json({}) });
     http.install();
     initEnsemblService({} as AppConfig, createInMemoryStorage());
   });
@@ -515,7 +520,7 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
       homologs: [{ targetId: 'ENSMUSG00000041147', targetSpecies: 'mus_musculus' }],
     });
     expect(contentText(result)).toContain(`## Homologs of ${bare} (homo_sapiens)`);
-    expect(http.calls).toHaveLength(1);
+    expect(http.calls).toHaveLength(2);
     expect(http.calls[0]?.request.url).toBe(
       `https://rest.ensembl.org/homology/id/homo_sapiens/${bare}?type=orthologues&target_species=mus_musculus`,
     );

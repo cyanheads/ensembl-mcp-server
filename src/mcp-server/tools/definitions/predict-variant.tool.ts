@@ -12,6 +12,20 @@ import type { VepRecord } from '@/services/ensembl/types.js';
 const UNKNOWN_SPECIES = /can not find internal name for species/i;
 
 const TranscriptConsequenceSchema = z.object({
+  variantAllele: z
+    .string()
+    .optional()
+    .describe('Allele this transcript consequence describes, in the upstream genomic orientation.'),
+  canonical: z
+    .boolean()
+    .optional()
+    .describe(
+      'Whether Ensembl marks this consequence transcript as canonical. Omitted when not reported.',
+    ),
+  maneSelect: z
+    .string()
+    .optional()
+    .describe('MANE Select RefSeq transcript accession, when supplied.'),
   transcriptId: z
     .string()
     .optional()
@@ -74,7 +88,19 @@ const ColocatedVariantSchema = z.object({
   clinicalSignificance: z
     .array(z.string().describe('A clinical significance term for this colocated known variant.'))
     .optional()
-    .describe('Clinical significance terms from ClinVar (e.g. pathogenic, benign).'),
+    .describe(
+      'Aggregate clinical significance terms for the colocated record; these do not classify the submitted allele.',
+    ),
+  clinicalSignificanceByAllele: z
+    .record(z.string(), z.array(z.string()))
+    .optional()
+    .describe(
+      'Clinical significance terms keyed by the allele explicitly annotated in the colocated record. Missing alleles have no reported attribution.',
+    ),
+  clinicalSignificanceReferenceAllele: z
+    .string()
+    .optional()
+    .describe('Reference allele for the colocated clinical annotations, when reported.'),
   pubmed: z
     .array(z.number().describe('A PubMed ID for literature citing this variant.'))
     .optional()
@@ -92,6 +118,10 @@ const ColocatedVariantSchema = z.object({
 });
 
 const VepResultSchema = z.object({
+  alleleString: z
+    .string()
+    .optional()
+    .describe('Reference and alternate alleles returned by VEP, separated by slashes.'),
   input: z.string().optional().describe('The input variant notation as submitted to VEP.'),
   chromosome: z.string().optional().describe('Chromosome the variant is on.'),
   start: z.number().optional().describe('Variant start position (1-based).'),
@@ -112,8 +142,8 @@ const VepResultSchema = z.object({
     )
     .describe(
       'Per-transcript consequence details, capped to max_transcript_consequences. High-impact ' +
-        'variants may affect many transcripts; focus on canonical transcripts (isCanonical from ' +
-        'ensembl_lookup_gene) for primary effect. transcriptConsequencesTotal reports the full count.',
+        'variants may affect many transcripts; canonical and maneSelect identify annotated primary transcripts. ' +
+        'transcriptConsequencesTotal reports the full count.',
     ),
   transcriptConsequencesTotal: z
     .number()
@@ -433,6 +463,7 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
 
     for (const r of result.results) {
       lines.push(`\n### Variant: ${r.input ?? 'unknown'}`);
+      if (r.alleleString) lines.push(`**Alleles:** ${r.alleleString}`);
       if (r.chromosome && r.start != null) {
         lines.push(
           `**Location:** ${r.chromosome}:${r.start}${r.end !== r.start ? `-${r.end}` : ''}${r.assemblyName ? ` [${r.assemblyName}]` : ''}`,
@@ -448,8 +479,12 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
           let cvLine = `- ${cv.id ?? 'novel'}`;
           if (cv.alleleString) cvLine += ` (${cv.alleleString})`;
           if (cv.clinicalSignificance?.length) {
-            cvLine += ` — ${cv.clinicalSignificance.join(', ')}`;
+            cvLine += ` — aggregate clinical significance: ${cv.clinicalSignificance.join(', ')}`;
           }
+          if (cv.clinicalSignificanceReferenceAllele)
+            cvLine += ` | Clinical reference allele: ${cv.clinicalSignificanceReferenceAllele}`;
+          for (const [allele, terms] of Object.entries(cv.clinicalSignificanceByAllele ?? {}))
+            cvLine += ` | ${allele}: ${terms.join(', ')}`;
           if (cv.pubmed?.length) {
             const pubmedTotal = cv.pubmedTotal ?? cv.pubmed.length;
             const pubmedSuffix =
@@ -470,6 +505,9 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
         for (const tc of r.transcriptConsequences) {
           const geneLabel = tc.geneSymbol ?? tc.geneId ?? 'unknown';
           lines.push(`\n#### ${geneLabel} — ${tc.transcriptId ?? 'unknown'}`);
+          if (tc.variantAllele) lines.push(`**Variant allele:** ${tc.variantAllele}`);
+          if (tc.canonical != null) lines.push(`**Ensembl canonical:** ${tc.canonical}`);
+          if (tc.maneSelect) lines.push(`**MANE Select:** ${tc.maneSelect}`);
           if (tc.geneId && tc.geneSymbol) lines.push(`**Gene ID:** ${tc.geneId}`);
           lines.push(
             `**Impact:** ${tc.impact ?? 'UNKNOWN'} | **Consequence:** ${tc.consequenceTerms.join(', ')}`,

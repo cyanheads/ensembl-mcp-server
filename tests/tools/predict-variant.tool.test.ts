@@ -518,7 +518,7 @@ describe('ensemblPredictVariant through EnsemblService (issues #34, #37)', () =>
       // A 400 input rejection is answered once, never retried as an outage.
       expect(http.calls).toHaveLength(1);
       expect(http.calls[0]?.request.url).toBe(
-        `https://rest.ensembl.org/vep/homo_sapiens/region/${encodeURIComponent(variant.split('/')[0]!)}/${variant.split('/')[1]}`,
+        `https://rest.ensembl.org/vep/homo_sapiens/region/${encodeURIComponent(variant.split('/')[0]!)}/${variant.split('/')[1]}?hgvs=1&canonical=1&mane=1`,
       );
     },
   );

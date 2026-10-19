@@ -69,6 +69,56 @@ const textOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
 const invalidRegion = () => ensemblQueryRegion.errors!.find((e) => e.reason === 'invalid_region')!;
 
 describe('ensembl_query_region upstream requests', () => {
+  it('characterizes unfiltered empty-region guidance', async () => {
+    http.route(
+      { match: OVERLAP, respond: () => Response.json([]) },
+      { match: ASSEMBLY, respond: () => Response.json(assemblyInfo) },
+    );
+    const result = await runToolContract(ensemblQueryRegion, {
+      species: 'homo_sapiens',
+      region: '13:32315086-32400268',
+    });
+    expect(result.structuredContent).toMatchObject({
+      totalCount: 0,
+      features: [],
+      notice: expect.stringContaining('may be intergenic'),
+    });
+    expect(textOf(result)).toContain('may be intergenic');
+  });
+
+  it('names a possible biotype mismatch without claiming why an empty region is empty', async () => {
+    http.route(
+      { match: OVERLAP, respond: () => Response.json([]) },
+      { match: ASSEMBLY, respond: () => Response.json({}) },
+    );
+    const result = await runToolContract(ensemblQueryRegion, {
+      species: 'homo_sapiens',
+      region: '13:32315086-32400268',
+      biotype: 'lncrna',
+    });
+    expect(result.isError).toBeUndefined();
+    const notice = String((result.structuredContent as { notice?: string }).notice);
+    expect(notice).toContain('"lncrna" may exclude');
+    expect(notice).toContain('case-sensitive');
+    expect(notice).toContain('lncRNA');
+    expect(notice).toContain('Remove the biotype filter');
+    expect(notice).not.toContain('intergenic');
+    expect(notice).toContain('assemblyName is omitted');
+    expect(textOf(result)).toContain(notice);
+    expect(new URL(http.calls[0]!.request.url).searchParams.get('biotype')).toBe('lncrna');
+  });
+
+  it('keeps a matching filtered region free of empty-result guidance', async () => {
+    http.route({ match: OVERLAP, respond: () => Response.json([geneRow]) });
+    const result = await runToolContract(ensemblQueryRegion, {
+      species: 'homo_sapiens',
+      region: '11:5225000-5230000',
+      biotype: 'protein_coding',
+    });
+    expect(result.structuredContent).toMatchObject({ totalCount: 1 });
+    expect(result.structuredContent).not.toHaveProperty('notice');
+    expect(textOf(result)).toContain('HBB');
+  });
   it('makes exactly one request when a feature row carries its assembly (issue #23)', async () => {
     http.route({ match: OVERLAP, respond: () => Response.json([geneRow]) });
     const result = await runToolContract(ensemblQueryRegion, {

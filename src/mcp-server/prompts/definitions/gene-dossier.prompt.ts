@@ -37,7 +37,8 @@ export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
           `1. **Resolve the gene** — call \`ensembl_lookup_gene\` with symbol="${args.gene_symbol}" ` +
           `and species="${args.species}", setting expand_transcripts=true. ` +
           `Record the stable ID (ENSG…), genomic coordinates (chr:start-end:strand:assembly), ` +
-          `biotype, and the canonical transcript ID (ENST…). If the symbol is a synonym, the gene ` +
+          `biotype, and canonicalTranscript (the canonical ENST… ID). Record transcript maneSelect ` +
+          `when available. If the symbol is a synonym, the gene ` +
           `carries matchedAlias and displayName is its current name. If the result is ambiguous ` +
           `instead of gene, the symbol names several genes: pick the candidate that fits the ` +
           `research question by description and location, call \`ensembl_lookup_gene\` again with ` +
@@ -59,12 +60,15 @@ export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
           `4. **Predict variant consequences** — for up to 3 variants from step 3, ` +
           `call \`ensembl_predict_variant\` with each variant's rsID (e.g. rs334), HGVS notation, ` +
           `or region+allele. This step returns the functional impact. ` +
-          `Record most_severe_consequence, impact, and clinical significance.\n\n` +
+          `Record mostSevereConsequence, impact, variantAllele, canonical, and maneSelect when present. ` +
+          `Clinical significance is aggregate for a colocated record; use clinicalSignificanceByAllele ` +
+          `for explicit allele attribution, never infer it for the submitted allele.\n\n` +
           `5. **Find cross-species orthologs** — call \`ensembl_get_homology\` with ` +
           `symbol="${args.gene_symbol}", species="${args.species}", and type="orthologues". ` +
-          `Focus on mammalian orthologs (mouse, rat, zebrafish). Record perc_id for the top 3.\n\n` +
+          `Focus on model-organism orthologs (mouse, rat, zebrafish). Record percId, targetSymbol, ` +
+          `and targetProteinId when present for the top 3. Missing targetSymbol does not imply no homolog.\n\n` +
           `6. **Get external database IDs** — call \`ensembl_get_xrefs\` with the stable gene ID ` +
-          `from step 1 (no dbname filter to get all). Record: ` +
+          `from step 1, all_levels=true, and no dbname filter to include transcript and translation references. Record: ` +
           `HGNC ID (dbname=HGNC), UniProt accession (dbname=Uniprot_gn), ` +
           `NCBI Gene ID (dbname=EntrezGene), and OMIM ID (dbname=MIM_GENE) if present.\n\n` +
           `7. **Synthesize the dossier** — compile your findings into a structured report with sections:\n` +
@@ -72,7 +76,7 @@ export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
           `   - Protein sequence summary (length, first 50 aa, key domains if known)\n` +
           `   - Variant landscape (count from step 3's totalCount, highest-impact findings, ` +
           `clinical significance)\n` +
-          `   - Conservation across species (ortholog table with perc_id)\n` +
+          `   - Conservation across species (ortholog table with percId)\n` +
           `   - External IDs for follow-up (UniProt → pubchem for structure, ` +
           `HGNC/EntrezGene → pubmed for literature, OMIM for disease associations)\n\n` +
           `Use the stable IDs and coordinates from each step as inputs to the next — ` +

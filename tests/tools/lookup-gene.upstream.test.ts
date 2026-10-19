@@ -176,6 +176,130 @@ function contentText(result: ToolContractResult): string {
 const recoveryOf = (reason: string) =>
   ensemblLookupGene.errors!.find((e) => e.reason === reason)!.recovery;
 
+describe('bounded batch partitions (issue #50)', () => {
+  it.each([20, 21, 1000])(
+    'partitions exactly %i distinct submitted queries in both modes',
+    async (count) => {
+      for (const mode of ['ids', 'symbols'] as const) {
+        const queries = Array.from({ length: count }, (_, i) =>
+          i === 0 ? (mode === 'ids' ? 'ENSG00000139618' : 'BRCA2') : `missing-${i}`,
+        );
+        const before = http.calls.length;
+        const result = await runToolContract(ensemblLookupGene, { [mode]: queries });
+        expect(result.isError).toBeUndefined();
+        const batch = (
+          result.structuredContent as {
+            batch: {
+              succeeded: { query: string }[];
+              failed: { query: string }[];
+              omitted: string[];
+            };
+          }
+        ).batch;
+        expect(batch.succeeded.map((row) => row.query)).toEqual(queries.slice(0, 1));
+        expect(batch.failed.map((row) => row.query)).toEqual(queries.slice(1, Math.min(20, count)));
+        expect(batch.omitted).toEqual(queries.slice(20));
+        const calls = http.calls.slice(before);
+        expect(
+          ((await calls[0]!.request.clone().json()) as Record<string, string[]>)[mode]!.sort(),
+        ).toEqual(queries.slice(0, 20).sort());
+        expect(calls).toHaveLength(mode === 'ids' ? 1 : 20);
+      }
+    },
+  );
+
+  it('characterizes trimming, distinct order, version attribution and typed misses', async () => {
+    const result = await runToolContract(ensemblLookupGene, {
+      ids: [' ENSG00000139618.17 ', 'missing', 'ENSG00000139618.17', 'ENSG00000141510'],
+    });
+    expect(result.structuredContent).toMatchObject({
+      batch: {
+        succeeded: [
+          { query: 'ENSG00000139618.17', id: 'ENSG00000139618' },
+          { query: 'ENSG00000141510' },
+        ],
+        failed: [{ query: 'missing', reason: 'not_found', recovery: recoveryOf('not_found') }],
+      },
+    });
+    expect((await lookupIdBody()).ids).toEqual(['ENSG00000139618', 'missing', 'ENSG00000141510']);
+    expect(contentText(result)).toContain('ENSG00000139618.17');
+  });
+
+  it.each(['ids', 'symbols'] as const)(
+    'processes the first 20 distinct %s and names only the unattempted remainder',
+    async (mode) => {
+      const queries =
+        mode === 'ids'
+          ? [
+              'ENSG00000139618.17',
+              ...Array.from({ length: 19 }, (_, i) => `missing${i}`),
+              'ENSG00000141510',
+            ]
+          : ['BRCA2', ...Array.from({ length: 19 }, (_, i) => `missing${i}`), 'HER2'];
+      const submitted = [...queries.slice(0, 20), ` ${queries[0]} `, ...queries.slice(20)];
+      const result = await runToolContract(ensemblLookupGene, { [mode]: submitted });
+      expect(result.isError).toBeUndefined();
+      const batch = (
+        result.structuredContent as {
+          batch: {
+            succeeded: { query: string }[];
+            failed: { query: string; reason: string }[];
+            omitted: string[];
+          };
+        }
+      ).batch;
+      expect(batch.succeeded.map((r) => r.query)).toEqual(queries.slice(0, 1));
+      expect(batch.failed.map((r) => r.query)).toEqual(queries.slice(1, 20));
+      expect(batch.failed.every((r) => r.reason === 'not_found')).toBe(true);
+      expect(batch.omitted).toEqual(queries.slice(20));
+      const body = (await http.calls[0]!.request.clone().json()) as Record<string, string[]>;
+      expect(body[mode]!.sort()).toEqual(
+        queries
+          .slice(0, 20)
+          .map((query) => query.replace(/\.[0-9]+$/, ''))
+          .sort(),
+      );
+      if (mode === 'symbols') {
+        expect(
+          http.calls
+            .slice(1)
+            .map((call) =>
+              decodeURIComponent(new URL(call.request.url).pathname.split('/').at(-1)!),
+            )
+            .sort(),
+        ).toEqual(queries.slice(1, 20).sort());
+      }
+      const notice = String((result.structuredContent as { notice?: string }).notice);
+      expect(notice).toContain('Resubmit');
+      expect(contentText(result)).toContain(notice);
+      expect(contentText(result)).toContain(queries[20]);
+      expect(contentText(result)).toContain('Omitted');
+    },
+  );
+
+  it.each(['ids', 'symbols'] as const)(
+    'accepts 1000 submitted %s but rejects 1001 without requests',
+    async (mode) => {
+      const repeated = Array.from({ length: 1000 }, () =>
+        mode === 'ids' ? 'ENSG00000139618' : 'BRCA2',
+      );
+      const valid = await runToolContract(ensemblLookupGene, { [mode]: repeated });
+      expect(valid.isError).toBeUndefined();
+      expect(valid.structuredContent).toMatchObject({
+        batch: { omitted: [], succeeded: [{ query: repeated[0] }], failed: [] },
+      });
+      const before = http.calls.length;
+      const invalid = await runToolContract(ensemblLookupGene, {
+        [mode]: [...repeated, repeated[0]!],
+      });
+      expect(invalid.structuredContent).toMatchObject({
+        error: { code: -32602, data: { reason: 'invalid_arguments' } },
+      });
+      expect(http.calls).toHaveLength(before);
+    },
+  );
+});
+
 async function lookupIdBody(): Promise<{ ids: string[]; expand?: number }> {
   const [call] = requests(LOOKUP_ID);
   return (await call!.request.clone().json()) as { ids: string[]; expand?: number };

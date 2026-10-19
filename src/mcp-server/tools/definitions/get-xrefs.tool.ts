@@ -34,12 +34,13 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
   description:
     'Retrieve cross-database references for a gene or feature — HGNC, UniProt, EntrezGene, OMIM, ' +
     'RefSeq, Reactome, and others. Returns each xref with its database name, primary ID, display ID, ' +
-    'and description. The dbname filter narrows to specific databases; omit to return all xrefs. ' +
+    'and description. By default only the requested object level is queried; all_levels=true ' +
+    'includes transcript and translation references for a gene. The dbname filter narrows this scope. ' +
     'IDs returned here chain to protein (pubchem via UniProt), literature (pubmed via PubMed IDs), ' +
     'disease (OMIM via MIM_GENE), and pathway (Reactome) resources. ' +
     'Requires an Ensembl stable ID — use ensembl_lookup_gene to get the ENSG… ID first. ' +
     'Common dbname values: HGNC, Uniprot_gn, EntrezGene, MIM_GENE, RefSeq_mRNA, RefSeq_peptide, ' +
-    'Reactome, GO (Gene Ontology), ChEMBL.',
+    'Reactome_gene (gene pathways), Reactome (translation pathways), GO (Gene Ontology), ChEMBL.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     id: z
@@ -47,10 +48,10 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
       .trim()
       .min(1)
       .describe(
-        'Ensembl stable gene ID (ENSG…) or transcript ID (ENST…). A version suffix on an ENS… ID ' +
+        'Ensembl stable gene (ENSG…), transcript (ENST…), or translation (ENSP…) ID. A version suffix on an ENS… ID ' +
           '(ENSG00000139618.17) is dropped before the request. ' +
           'Use ensembl_lookup_gene to get the stable ID from a gene symbol. ' +
-          'xrefs/id returns the full cross-reference set (56+ entries for well-annotated genes like BRCA2).',
+          'References default to this object level; all_levels=true includes child objects.',
       ),
     dbname: z
       .string()
@@ -59,8 +60,16 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
         'Filter to a specific external database by its Ensembl internal name. ' +
           'Examples: HGNC (HGNC gene ID), Uniprot_gn (UniProt gene name), ' +
           'EntrezGene (NCBI Gene ID), MIM_GENE (OMIM disease gene), ' +
-          'RefSeq_mRNA (NCBI RefSeq transcript), Reactome (pathway IDs), ' +
-          'GO (Gene Ontology terms). Omit to return all available xrefs.',
+          'RefSeq_mRNA (NCBI RefSeq transcript), Reactome_gene (gene pathways), Reactome (translation pathways), ' +
+          'GO (Gene Ontology terms). Transcript/translation references may require all_levels=true ' +
+          'or the specific feature ID. Omit to return every database within the selected scope.',
+      ),
+    all_levels: z
+      .boolean()
+      .default(false)
+      .describe(
+        'Include references on child objects: a gene includes its transcripts and translations. ' +
+          'Default false queries only the requested object level, independently of dbname.',
       ),
   }),
   output: z.object({
@@ -84,7 +93,7 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
-      when: 'The Ensembl stable ID was not found or has no cross-references.',
+      when: 'The Ensembl stable ID was not found. An empty cross-reference list remains successful.',
       recovery:
         'Use ensembl_lookup_gene to verify the stable ID is current and valid. ' +
         'A version suffix is already dropped from an ENS… ID, so an ID still not found is ' +
@@ -97,7 +106,7 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
     const service = getEnsemblService();
 
     const xrefs = await service
-      .getXrefsById(input.id.trim(), input.dbname?.trim() || undefined, ctx)
+      .getXrefsById(input.id.trim(), input.dbname?.trim() || undefined, ctx, input.all_levels)
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         if (/not found/i.test(msg)) {
@@ -110,7 +119,10 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
       const filterNote = input.dbname ? ` with dbname filter "${input.dbname}"` : '';
       ctx.enrich.notice(
         `No cross-references found for ${input.id}${filterNote}. ` +
-          'Try without the dbname filter to see all available databases.',
+          (input.all_levels
+            ? 'Try a more specific feature ID or remove the dbname filter within this scope.'
+            : 'Try all_levels=true to include child-object references, or a more specific feature ID. ' +
+              'Remove the dbname filter to see other databases within this scope.'),
       );
     }
     ctx.enrich.total(xrefs.length);

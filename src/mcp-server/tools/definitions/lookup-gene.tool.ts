@@ -17,6 +17,10 @@ const DIRECT_MISS = /No valid lookup found for symbol/i;
 const UNKNOWN_SPECIES = /Can not find internal name for species/i;
 
 const TranscriptSummarySchema = z.object({
+  maneSelect: z
+    .string()
+    .optional()
+    .describe('MANE Select RefSeq transcript accession, when supplied by Ensembl.'),
   id: z.string().describe('Ensembl transcript stable ID (ENST…).'),
   displayName: z.string().optional().describe('Transcript display name.'),
   biotype: z
@@ -31,6 +35,16 @@ const TranscriptSummarySchema = z.object({
 });
 
 const GeneRecordSchema = z.object({
+  canonicalTranscript: z
+    .string()
+    .optional()
+    .describe(
+      'Canonical Ensembl transcript ID, including its version when supplied. Use for a primary protein sequence.',
+    ),
+  parentGeneId: z
+    .string()
+    .optional()
+    .describe('Parent gene stable ID for a transcript-ID lookup. Absent for other object types.'),
   id: z
     .string()
     .describe('Ensembl gene stable ID (ENSG…). Use this as input to other Ensembl tools.'),
@@ -93,6 +107,11 @@ const FailedItemSchema = z.object({
 });
 
 const BatchResultSchema = z.object({
+  omitted: z
+    .array(z.string().describe('A distinct submitted query not attempted in this call.'))
+    .describe(
+      'Queries past the first 20 distinct items, in first-occurrence order. Resubmit these separately.',
+    ),
   succeeded: z
     .array(SucceededItemSchema.describe('A resolved gene record carrying its submitted query.'))
     .describe('Records for IDs/symbols that resolved to one gene, in input order.'),
@@ -127,7 +146,8 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
     '(BRCA2 + homo_sapiens) and direct ID lookup (ENSG00000139618). A symbol that is not a current gene ' +
     'name is matched against synonyms and former symbols (HER2 → ERBB2), reported as matchedAlias; when ' +
     'it maps to several genes the result is ambiguous, listing the candidates to retry by id. Supports ' +
-    'batch lookup of up to 20 IDs or symbols in one call via the ids or symbols field. Provide exactly ' +
+    'batch submission of up to 1,000 IDs or symbols: the first 20 distinct queries are resolved, ' +
+    'and batch.omitted names the unattempted remainder to resubmit. Provide exactly ' +
     'one of symbol, id, ids, or symbols. For symbol lookups species defaults to homo_sapiens (override ' +
     'for other organisms); for ID lookups species is not needed. Use ensembl_list_species with ' +
     'nameContains (a genus or common name) to find valid species names.',
@@ -167,11 +187,12 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
           .min(1)
           .describe('An Ensembl stable gene or transcript ID to resolve in this batch.'),
       )
-      .max(20)
+      .max(1000)
       .optional()
       .describe(
-        'Batch lookup: up to 20 Ensembl stable IDs (ENSG…, ENST…). A version suffix on an ENS… ' +
-          'ID is dropped before the lookup. Returns a succeeded/failed split; each item carries ' +
+        'Batch submission: up to 1,000 Ensembl stable IDs (ENSG…, ENST…); resolves the first 20 distinct trimmed queries. ' +
+          'batch.omitted names the remainder to resubmit. A version suffix on an ENS… ' +
+          'ID is dropped before the lookup. Returns a succeeded/failed/omitted partition; each attempted item carries ' +
           'its query — the ID as submitted, version included — and each failed item a reason and ' +
           'recovery. Provide exactly one of symbol, id, ids, or symbols.',
       ),
@@ -183,12 +204,13 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
           .min(1)
           .describe('A gene symbol to resolve in this batch (e.g. BRCA2, TP53).'),
       )
-      .max(20)
+      .max(1000)
       .optional()
       .describe(
-        'Batch lookup: up to 20 gene symbols. ' +
+        'Batch submission: up to 1,000 gene symbols; resolves the first 20 distinct trimmed queries. ' +
+          'batch.omitted names the remainder to resubmit. ' +
           'Species defaults to homo_sapiens; set species for other organisms. ' +
-          'Returns a succeeded/failed split; each item carries its submitted query. Synonyms and ' +
+          'Returns a succeeded/failed/omitted partition; each attempted item carries its submitted query. Synonyms and ' +
           'former symbols resolve with matchedAlias; one shared by several genes fails with ' +
           'reason ambiguous and its candidates. Provide exactly one of symbol, id, ids, or symbols.',
       ),
@@ -220,6 +242,10 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       'Batch results. Present for ids or symbols lookups.',
     ),
   }),
+
+  enrichment: {
+    notice: z.string().optional().describe('Guidance for resubmitting unattempted batch queries.'),
+  },
 
   errors: [
     {
@@ -279,7 +305,9 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
 
     // --- Batch by IDs ---
     if (input.ids?.length) {
-      const ids = [...new Set(input.ids)];
+      const distinct = [...new Set(input.ids)];
+      const ids = distinct.slice(0, 20);
+      const omitted = distinct.slice(20);
       const map = await service.lookupGenesBatch(ids, input.expand_transcripts, ctx);
       const succeeded: SucceededItem[] = [];
       const failed: FailedItem[] = [];
@@ -296,13 +324,19 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
           });
         }
       }
-      return { batch: { succeeded, failed } };
+      if (omitted.length)
+        ctx.enrich.notice(
+          `${omitted.length} distinct queries were not attempted. Resubmit batch.omitted in another call; each call resolves at most 20 distinct queries.`,
+        );
+      return { batch: { succeeded, failed, omitted } };
     }
 
     // --- Batch by symbols ---
     if (input.symbols?.length) {
       const speciesStr = input.species?.trim() || 'homo_sapiens';
-      const symbols = [...new Set(input.symbols)];
+      const distinct = [...new Set(input.symbols)];
+      const symbols = distinct.slice(0, 20);
+      const omitted = distinct.slice(20);
       const direct = await service.lookupSymbolsBatch(
         symbols,
         speciesStr,
@@ -366,7 +400,11 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
           });
         }
       }
-      return { batch: { succeeded, failed } };
+      if (omitted.length)
+        ctx.enrich.notice(
+          `${omitted.length} distinct queries were not attempted. Resubmit batch.omitted in another call; each call resolves at most 20 distinct queries.`,
+        );
+      return { batch: { succeeded, failed, omitted } };
     }
 
     // --- Single symbol ---
@@ -433,6 +471,8 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
     const renderGene = (g: GeneItem, heading = '##') => {
       lines.push(`${heading} ${g.displayName ?? g.id}`);
       lines.push(`**ID:** ${g.id}`);
+      if (g.canonicalTranscript) lines.push(`**Canonical transcript:** ${g.canonicalTranscript}`);
+      if (g.parentGeneId) lines.push(`**Parent gene:** ${g.parentGeneId}`);
       if (g.query) lines.push(`**Query:** ${g.query}`);
       if (g.matchedAlias) lines.push(`**Matched alias:** ${g.matchedAlias}`);
       if (g.species) lines.push(`**Species:** ${g.species}`);
@@ -454,7 +494,7 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
               : '';
           const len = t.lengthInBp != null ? ` ${t.lengthInBp}bp` : '';
           lines.push(
-            `- ${t.id}${t.displayName ? ` (${t.displayName})` : ''}${canon}${t.biotype ? ` [${t.biotype}]` : ''}${loc}${len}`,
+            `- ${t.id}${t.displayName ? ` (${t.displayName})` : ''}${canon}${t.maneSelect ? ` | MANE Select: ${t.maneSelect}` : ''}${t.biotype ? ` [${t.biotype}]` : ''}${loc}${len}`,
           );
         }
       }
@@ -473,7 +513,7 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       }
     }
     if (result.batch) {
-      const { succeeded, failed } = result.batch;
+      const { succeeded, failed, omitted } = result.batch;
       lines.push(`## Batch Lookup Results`);
       lines.push(`**Succeeded:** ${succeeded.length} | **Failed:** ${failed.length}\n`);
       for (const g of succeeded) {
@@ -494,6 +534,11 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
         for (const recovery of new Set(failed.map((f) => f.recovery))) {
           lines.push(`- ${recovery}`);
         }
+      }
+      if (omitted.length) {
+        lines.push(`\n### Omitted (${omitted.length}) — not attempted`);
+        for (const query of omitted) lines.push(`- ${query}`);
+        lines.push('Resubmit these queries in another call.');
       }
     }
 

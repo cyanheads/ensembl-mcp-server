@@ -146,7 +146,7 @@ describe('ensemblGeneResource versioned stable IDs (issue #41)', () => {
       const result = await ensemblGeneResource.handler(params, ctx);
       expect(result).toMatchObject({ id: 'ENSG00000139618', displayName: 'BRCA2' });
       expect(http.calls.map((c) => c.request.url)).toEqual([
-        'https://rest.ensembl.org/lookup/id/ENSG00000139618?expand=1',
+        'https://rest.ensembl.org/lookup/id/ENSG00000139618?expand=1&mane=1',
       ]);
     } finally {
       upstream.real = false;

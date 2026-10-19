@@ -9,6 +9,8 @@ import type { McpError } from '@cyanheads/mcp-ts-core/errors';
 
 export type RawGeneRecord = {
   id: string;
+  canonical_transcript?: string;
+  Parent?: string;
   display_name?: string;
   description?: string;
   biotype?: string;
@@ -29,6 +31,7 @@ export type RawGeneRecord = {
 
 export type RawTranscriptSummary = {
   id: string;
+  MANE?: Array<{ type?: string; refseq_match?: string }>;
   display_name?: string;
   biotype?: string;
   is_canonical?: number;
@@ -111,6 +114,13 @@ export type RawRegionInfo = {
 };
 
 export type RawVepTranscriptConsequence = {
+  variant_allele?: string;
+  canonical?: number;
+  mane_select?: string;
+  sift_prediction?: string;
+  sift_score?: number;
+  polyphen_prediction?: string;
+  polyphen_score?: number;
   transcript_id?: string;
   gene_id?: string;
   gene_symbol?: string;
@@ -128,6 +138,9 @@ export type RawVepTranscriptConsequence = {
 };
 
 export type RawColocatedVariant = {
+  clin_sig?: string[];
+  clin_sig_allele?: string;
+  clin_sig_ref_allele?: string;
   id?: string;
   allele_string?: string;
   clinical_significance?: string[];
@@ -158,6 +171,7 @@ export type RawHomologyEntry = {
   taxonomy_level?: string;
   target?: {
     id?: string;
+    protein_id?: string;
     species?: string;
     perc_id?: number;
     perc_pos?: number;
@@ -215,6 +229,8 @@ export type EnsemblErrorEnvelope = {
 
 export type GeneRecord = {
   id: string;
+  canonicalTranscript?: string;
+  parentGeneId?: string;
   species?: string;
   displayName?: string;
   description?: string;
@@ -249,6 +265,7 @@ export type MitochondrionAliasCheck =
 
 export type TranscriptSummary = {
   id: string;
+  maneSelect?: string;
   displayName?: string;
   biotype?: string;
   isCanonical: boolean;
@@ -311,6 +328,9 @@ export type OverlapFeature = {
 };
 
 export type VepConsequence = {
+  variantAllele?: string;
+  canonical?: boolean;
+  maneSelect?: string;
   transcriptId?: string;
   geneId?: string;
   geneSymbol?: string;
@@ -325,6 +345,8 @@ export type VepConsequence = {
 };
 
 export type ColocatedVariant = {
+  clinicalSignificanceByAllele?: Record<string, string[]>;
+  clinicalSignificanceReferenceAllele?: string;
   id?: string;
   alleleString?: string;
   clinicalSignificance?: string[];
@@ -332,6 +354,7 @@ export type ColocatedVariant = {
 };
 
 export type VepRecord = {
+  alleleString?: string;
   input?: string;
   chromosome?: string;
   start?: number;
@@ -344,6 +367,8 @@ export type VepRecord = {
 
 export type HomologyEntry = {
   targetId: string;
+  targetProteinId?: string;
+  targetSymbol?: string;
   targetSpecies?: string;
   type?: string;
   percId?: number;

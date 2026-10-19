@@ -15,6 +15,14 @@ const UNKNOWN_SPECIES = /can not find internal name for species/i;
 
 const HomologyEntrySchema = z.object({
   targetId: z.string().describe('Ensembl stable ID of the homologous gene in the target species.'),
+  targetSymbol: z
+    .string()
+    .optional()
+    .describe('Target gene display name, when a bounded secondary lookup resolves it.'),
+  targetProteinId: z
+    .string()
+    .optional()
+    .describe('Target translation stable ID. Pass to ensembl_get_sequence with type="protein".'),
   targetSpecies: z
     .string()
     .optional()
@@ -53,11 +61,13 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
   title: 'Get Gene Homologs',
   description:
     "Find orthologs and/or paralogs of a gene across species. Returns each homolog's stable ID, species, " +
-    'homology type (ortholog_one2one, ortholog_one2many, paralog_many2many, etc.), perc_id (percent identity), ' +
-    'perc_pos (percent positives), and taxonomy level. Essential for cross-species research — for example, ' +
+    'homology type (ortholog_one2one, ortholog_one2many, paralog_many2many, etc.), percId (percent identity), ' +
+    'percPos (percent positives), and taxonomy level. Essential for cross-species research — for example, ' +
     '"what is the mouse equivalent of human TP53?" or "how conserved is BRCA2 across mammals?". ' +
     'Provide either symbol + species or a stable gene ID. Target species can be filtered to a single species ' +
-    'or left open to return all available homologs.',
+    'or left open to return all available homologs. Includes targetProteinId when available for ' +
+    'ensembl_get_sequence with type="protein". targetSymbol is best-effort: a secondary gene lookup ' +
+    'shares five seconds across the returned rows and the remaining call deadline; missing names never remove homologs.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     symbol: z
@@ -141,7 +151,9 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     notice: z
       .string()
       .optional()
-      .describe('Guidance when no homologs are found or the list was capped.'),
+      .describe(
+        'Guidance when no homologs are found, the list was capped, or symbol enrichment is incomplete.',
+      ),
     truncated: z
       .boolean()
       .optional()
@@ -260,25 +272,47 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     // so a caller is never misled about completeness (max_results = 0 disables).
     const availableCount = homologs.length;
     const returned = input.max_results > 0 ? homologs.slice(0, input.max_results) : homologs;
+    const names = await service.getHomologyTargetSymbols(
+      returned.map((h) => h.targetId),
+      ctx,
+    );
+    const enriched = returned.map((h) => {
+      const name = names.get(h.targetId);
+      return name ? { ...h, targetSymbol: name } : h;
+    });
+    const missingNames = enriched.filter((h) => !h.targetSymbol).length;
+    const fragments: string[] = [];
 
     if (returned.length === 0) {
-      ctx.enrich.notice(
+      fragments.push(
         `No ${input.type} found for "${queryId}" in ${input.species}` +
           (input.target_species ? ` targeting ${input.target_species}` : '') +
           '. Try type=all or remove the target_species filter.',
       );
     } else if (returned.length < availableCount) {
+      fragments.push(
+        `Showing ${returned.length} of ${availableCount} homologs. ` +
+          'Raise max_results (0 returns all) or set target_species to narrow to one species.',
+      );
+    }
+    if (missingNames) {
+      fragments.push(
+        `Target symbols are unavailable for ${missingNames} returned homologs: lookup failed, exhausted its budget, or supplied no name. ` +
+          'All homologs are retained; use ensembl_lookup_gene with their targetId to look up missing names.',
+      );
+    }
+    if (returned.length < availableCount) {
       ctx.enrich.truncated({
         shown: returned.length,
         cap: input.max_results,
-        guidance:
-          `Showing ${returned.length} of ${availableCount} homologs. ` +
-          'Raise max_results (0 returns all) or set target_species to narrow to one species.',
+        guidance: fragments.join(' '),
       });
+    } else if (fragments.length) {
+      ctx.enrich.notice(fragments.join(' '));
     }
 
     return {
-      homologs: returned,
+      homologs: enriched,
       totalCount: availableCount,
       queryId,
       querySpecies: input.species,
@@ -301,6 +335,8 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
 
     for (const h of result.homologs) {
       lines.push(`### ${h.targetId}`);
+      if (h.targetSymbol) lines.push(`**Gene symbol:** ${h.targetSymbol}`);
+      if (h.targetProteinId) lines.push(`**Protein ID:** ${h.targetProteinId}`);
       if (h.targetSpecies) lines.push(`**Species:** ${h.targetSpecies}`);
       if (h.type) lines.push(`**Homology type:** ${h.type}`);
       if (h.percId != null) lines.push(`**Percent identity:** ${h.percId.toFixed(1)}%`);

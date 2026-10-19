@@ -184,6 +184,7 @@ describe('ensemblLookupGene', () => {
   it('formats batch result with succeeded and failed entries', () => {
     const output = {
       batch: {
+        omitted: [],
         succeeded: [{ query: 'ENSG00000139618', ...brca2Gene }],
         failed: [
           {
@@ -216,6 +217,7 @@ describe('ensemblLookupGene', () => {
     const text = (
       ensemblLookupGene.format!({
         batch: {
+          omitted: [],
           succeeded: [{ query: 'her2', ...erbb2Gene, matchedAlias: 'her2' }],
           failed: [
             missing('NOPE_A'),

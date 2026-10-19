@@ -177,6 +177,8 @@ function normalizeGene(raw: RawGeneRecord): GeneRecord {
   const desc = raw.description?.split('[')[0]?.trim();
   return {
     id: raw.id,
+    ...(raw.canonical_transcript && { canonicalTranscript: raw.canonical_transcript }),
+    ...(raw.object_type === 'Transcript' && raw.Parent && { parentGeneId: raw.Parent }),
     ...(raw.species && { species: raw.species }),
     ...(raw.display_name && { displayName: raw.display_name }),
     ...(desc ? { description: desc } : {}),
@@ -187,16 +189,20 @@ function normalizeGene(raw: RawGeneRecord): GeneRecord {
     ...(typeof raw.strand === 'number' && { strand: raw.strand }),
     ...(raw.assembly_name && { assemblyName: raw.assembly_name }),
     ...(raw.Transcript && {
-      transcripts: raw.Transcript.map((t) => ({
-        id: t.id,
-        ...(t.display_name && { displayName: t.display_name }),
-        ...(t.biotype && { biotype: t.biotype }),
-        isCanonical: t.is_canonical === 1,
-        ...(typeof t.start === 'number' && { start: t.start }),
-        ...(typeof t.end === 'number' && { end: t.end }),
-        ...(typeof t.strand === 'number' && { strand: t.strand }),
-        ...(typeof t.length === 'number' && { lengthInBp: t.length }),
-      })),
+      transcripts: raw.Transcript.map((t) => {
+        const maneSelect = t.MANE?.find((entry) => entry.type === 'MANE_Select')?.refseq_match;
+        return {
+          id: t.id,
+          ...(maneSelect && { maneSelect }),
+          ...(t.display_name && { displayName: t.display_name }),
+          ...(t.biotype && { biotype: t.biotype }),
+          isCanonical: t.is_canonical === 1,
+          ...(typeof t.start === 'number' && { start: t.start }),
+          ...(typeof t.end === 'number' && { end: t.end }),
+          ...(typeof t.strand === 'number' && { strand: t.strand }),
+          ...(typeof t.length === 'number' && { lengthInBp: t.length }),
+        };
+      }),
     }),
   };
 }
@@ -255,6 +261,7 @@ function normalizeOverlapFeature(raw: RawOverlapFeature): OverlapFeature {
 
 function normalizeVep(raw: RawVepRecord): VepRecord {
   return {
+    ...(raw.allele_string && { alleleString: raw.allele_string }),
     ...(raw.input && { input: raw.input }),
     ...(raw.seq_region_name && { chromosome: raw.seq_region_name }),
     ...(typeof raw.start === 'number' && { start: raw.start }),
@@ -264,6 +271,9 @@ function normalizeVep(raw: RawVepRecord): VepRecord {
       mostSevereConsequence: raw.most_severe_consequence,
     }),
     transcriptConsequences: (raw.transcript_consequences ?? []).map((tc) => ({
+      ...(tc.variant_allele && { variantAllele: tc.variant_allele }),
+      ...(typeof tc.canonical === 'number' && { canonical: tc.canonical === 1 }),
+      ...(tc.mane_select && { maneSelect: tc.mane_select }),
       ...(tc.transcript_id && { transcriptId: tc.transcript_id }),
       ...(tc.gene_id && { geneId: tc.gene_id }),
       ...(tc.gene_symbol && { geneSymbol: tc.gene_symbol }),
@@ -273,17 +283,36 @@ function normalizeVep(raw: RawVepRecord): VepRecord {
       ...(tc.hgvsc && { hgvsc: tc.hgvsc }),
       ...(tc.hgvsp && { hgvsp: tc.hgvsp }),
       ...(tc.amino_acids && { aminoAcids: tc.amino_acids }),
-      ...(tc.sift && { sift: tc.sift }),
-      ...(tc.polyphen && { polyphen: tc.polyphen }),
+      ...(tc.sift_prediction && typeof tc.sift_score === 'number'
+        ? { sift: { prediction: tc.sift_prediction, score: tc.sift_score } }
+        : tc.sift && { sift: tc.sift }),
+      ...(tc.polyphen_prediction && typeof tc.polyphen_score === 'number'
+        ? { polyphen: { prediction: tc.polyphen_prediction, score: tc.polyphen_score } }
+        : tc.polyphen && { polyphen: tc.polyphen }),
     })),
-    colocatedVariants: (raw.colocated_variants ?? []).map((cv) => ({
-      ...(cv.id && { id: cv.id }),
-      ...(cv.allele_string && { alleleString: cv.allele_string }),
-      ...(cv.clinical_significance?.length && {
-        clinicalSignificance: cv.clinical_significance,
-      }),
-      ...(cv.pubmed?.length && { pubmed: cv.pubmed }),
-    })),
+    colocatedVariants: (raw.colocated_variants ?? []).map((cv) => {
+      const termsByAllele = new Map<string, string[]>();
+      for (const segment of cv.clin_sig_allele?.split(';') ?? []) {
+        const [allele, term, ...extra] = segment.split(':').map((part) => part.trim());
+        if (!allele || !term || extra.length > 0) continue;
+        const terms = termsByAllele.get(allele) ?? [];
+        terms.push(term);
+        termsByAllele.set(allele, terms);
+      }
+      const clinicalSignificance = cv.clin_sig ?? cv.clinical_significance;
+      return {
+        ...(cv.id && { id: cv.id }),
+        ...(cv.allele_string && { alleleString: cv.allele_string }),
+        ...(clinicalSignificance?.length && { clinicalSignificance }),
+        ...(termsByAllele.size > 0 && {
+          clinicalSignificanceByAllele: Object.fromEntries(termsByAllele),
+        }),
+        ...(cv.clin_sig_ref_allele && {
+          clinicalSignificanceReferenceAllele: cv.clin_sig_ref_allele,
+        }),
+        ...(cv.pubmed?.length && { pubmed: cv.pubmed }),
+      };
+    }),
   };
 }
 
@@ -291,6 +320,7 @@ function normalizeHomology(raw: RawHomologyResponse, sourceId: string): Homology
   const dataEntry = raw.data?.find((d) => d.id === sourceId) ?? raw.data?.[0];
   const homologs: HomologyEntry[] = (dataEntry?.homologies ?? []).map((h) => ({
     targetId: h.target?.id ?? h.id,
+    ...(h.target?.protein_id && { targetProteinId: h.target.protein_id }),
     ...(h.target?.species
       ? { targetSpecies: h.target.species }
       : h.species
@@ -496,14 +526,14 @@ export class EnsemblService {
     expandTranscripts: boolean,
     ctx: Context,
   ): Promise<GeneRecord> {
-    const expand = expandTranscripts ? '?expand=1' : '';
+    const expand = expandTranscripts ? '?expand=1&mane=1' : '';
     const path = `/lookup/symbol/${encodeURIComponent(species)}/${encodeURIComponent(symbol)}${expand}`;
     const raw = await this.fetchWithRetry<RawGeneRecord>(path, ctx);
     return normalizeGene(raw);
   }
 
   async lookupGeneById(id: string, expandTranscripts: boolean, ctx: Context): Promise<GeneRecord> {
-    const expand = expandTranscripts ? '?expand=1' : '';
+    const expand = expandTranscripts ? '?expand=1&mane=1' : '';
     const path = `/lookup/id/${encodeURIComponent(unversioned(id))}${expand}`;
     const raw = await this.fetchWithRetry<RawGeneRecord>(path, ctx);
     return normalizeGene(raw);
@@ -521,7 +551,8 @@ export class EnsemblService {
   ): Promise<Map<string, GeneRecord>> {
     const body: Record<string, unknown> = { ids: [...new Set(ids.map(unversioned))] };
     if (expandTranscripts) body.expand = 1;
-    const raw = await this.fetchWithRetry<Record<string, RawGeneRecord | null>>('/lookup/id', ctx, {
+    const path = `/lookup/id${expandTranscripts ? '?expand=1&mane=1' : ''}`;
+    const raw = await this.fetchWithRetry<Record<string, RawGeneRecord | null>>(path, ctx, {
       method: 'POST',
       body,
     });
@@ -544,7 +575,7 @@ export class EnsemblService {
     const body: Record<string, unknown> = { symbols };
     if (expandTranscripts) body.expand = 1;
     const raw = await this.fetchWithRetry<Record<string, RawGeneRecord | null>>(
-      `/lookup/symbol/${encodeURIComponent(species)}`,
+      `/lookup/symbol/${encodeURIComponent(species)}${expandTranscripts ? '?expand=1&mane=1' : ''}`,
       ctx,
       { method: 'POST', body },
     );
@@ -831,7 +862,7 @@ export class EnsemblService {
   // --- VEP ---
 
   async predictVariantHgvs(notation: string, species: string, ctx: Context): Promise<VepRecord[]> {
-    const path = `/vep/${encodeURIComponent(species)}/hgvs/${encodeURIComponent(notation)}`;
+    const path = `/vep/${encodeURIComponent(species)}/hgvs/${encodeURIComponent(notation)}?hgvs=1&canonical=1&mane=1`;
     const raw = await this.fetchWithRetry<RawVepRecord[]>(path, ctx);
     if (!Array.isArray(raw)) return [];
     return raw.map(normalizeVep);
@@ -847,20 +878,72 @@ export class EnsemblService {
     ctx: Context,
   ): Promise<VepRecord[]> {
     const regionAllele = `${encodeURIComponent(`${chr}:${start}:${end}:${strand}`)}/${encodeURIComponent(allele)}`;
-    const path = `/vep/${encodeURIComponent(species)}/region/${regionAllele}`;
+    const path = `/vep/${encodeURIComponent(species)}/region/${regionAllele}?hgvs=1&canonical=1&mane=1`;
     const raw = await this.fetchWithRetry<RawVepRecord[]>(path, ctx);
     if (!Array.isArray(raw)) return [];
     return raw.map(normalizeVep);
   }
 
   async predictVariantId(id: string, species: string, ctx: Context): Promise<VepRecord[]> {
-    const path = `/vep/${encodeURIComponent(species)}/id/${encodeURIComponent(id)}`;
+    const path = `/vep/${encodeURIComponent(species)}/id/${encodeURIComponent(id)}?hgvs=1&canonical=1&mane=1`;
     const raw = await this.fetchWithRetry<RawVepRecord[]>(path, ctx);
     if (!Array.isArray(raw)) return [];
     return raw.map(normalizeVep);
   }
 
   // --- Homology ---
+
+  /**
+   * Best-effort names for returned homologs, sharing five seconds across all
+   * <=1,000-ID chunks and bounded by the original call's remaining deadline.
+   * Primary rows never depend on this lookup; only caller cancellation escapes.
+   */
+  async getHomologyTargetSymbols(ids: string[], ctx: Context): Promise<Map<string, string>> {
+    ctx.signal.throwIfAborted();
+    const names = new Map<string, string>();
+    const distinct = [...new Set(ids)];
+    if (!distinct.length) return names;
+    const callStart = this.callStarts.get(ctx) ?? Date.now();
+    const budget = Math.min(5000, callStart + ENSEMBL_CALL_DEADLINE_MS - Date.now());
+    if (budget <= 0) return names;
+    try {
+      await withRetry(
+        async (attempt) => {
+          for (let offset = 0; offset < distinct.length; offset += 1000) {
+            attempt.signal.throwIfAborted();
+            const chunk = distinct.slice(offset, offset + 1000);
+            const raw = await this.fetchJson<Record<string, RawGeneRecord | null>>(
+              '/lookup/id',
+              ctx,
+              { method: 'POST', body: { ids: chunk } },
+              attempt,
+            );
+            attempt.signal.throwIfAborted();
+            for (const id of chunk) {
+              const record = Object.hasOwn(raw, id) ? raw[id] : null;
+              if (typeof record?.display_name === 'string' && record.display_name) {
+                names.set(id, record.display_name);
+              }
+            }
+          }
+        },
+        {
+          operation: 'Ensembl homology symbol enrichment',
+          signal: ctx.signal,
+          deadlineMs: budget,
+          maxRetries: 0,
+        },
+      );
+    } catch (err) {
+      if (ctx.signal.aborted) throw err;
+      ctx.log.debug('Homology symbol lookup incomplete', {
+        resolved: names.size,
+        requested: distinct.length,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return names;
+  }
 
   async getHomologyBySymbol(
     symbol: string,
@@ -896,9 +979,17 @@ export class EnsemblService {
 
   // --- Xrefs ---
 
-  async getXrefsById(id: string, dbname: string | undefined, ctx: Context): Promise<XrefEntry[]> {
+  async getXrefsById(
+    id: string,
+    dbname: string | undefined,
+    ctx: Context,
+    allLevels = false,
+  ): Promise<XrefEntry[]> {
     let path = `/xrefs/id/${encodeURIComponent(unversioned(id))}`;
-    if (dbname) path += `?external_db=${encodeURIComponent(dbname)}`;
+    const params = new URLSearchParams();
+    if (dbname) params.set('external_db', dbname);
+    if (allLevels) params.set('all_levels', '1');
+    if (params.size) path += `?${params}`;
     const raw = await this.fetchWithRetry<RawXrefEntry[]>(path, ctx);
     if (!Array.isArray(raw)) return [];
     return raw.map(normalizeXref);

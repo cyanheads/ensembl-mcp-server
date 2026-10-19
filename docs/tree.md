@@ -1,6 +1,6 @@
 # ensembl-mcp-server - Directory Structure
 
-Generated on: 2026-10-13 19:47:54
+Generated on: 2026-10-19 01:25:15
 
 ```text
 ensembl-mcp-server/
@@ -178,7 +178,9 @@ ensembl-mcp-server/
 │   ├── services/
 │   │   └── ensembl-service.test.ts
 │   └── tools/
+│       ├── annotations.upstream.test.ts
 │       ├── get-homology.tool.test.ts
+│       ├── get-homology.upstream.test.ts
 │       ├── get-sequence.tool.test.ts
 │       ├── get-sequence.upstream.test.ts
 │       ├── get-xrefs.tool.test.ts

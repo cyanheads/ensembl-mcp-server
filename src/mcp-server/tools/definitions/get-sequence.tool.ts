@@ -36,7 +36,7 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
     'a :-1 suffix (13:32315086-32315100:-1) returns the reverse-strand sequence. ' +
     'Regions return genomic DNA only. Protein sequences require a transcript or protein stable ID ' +
     '(ENST…/ENSP…), not a gene ID — use ' +
-    'ensembl_lookup_gene with expand_transcripts=true to get the canonical transcript ID first.',
+    'ensembl_lookup_gene and its canonicalTranscript field first; expand_transcripts=true also supplies transcript biotypes and MANE Select accessions.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     id: z
@@ -177,8 +177,8 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
         'Region ids are genomic-only, a gene ID serves only its genomic sequence, and a protein ID ' +
         'serves only its protein. Request cdna or cds from a transcript ID (ENST…) and protein from ' +
         'a transcript or protein ID (ENST…/ENSP…); a non-coding transcript has no protein or CDS, so ' +
-        'request cdna or genomic from it. Use ensembl_lookup_gene with expand_transcripts=true to ' +
-        'find the canonical transcript ID and its biotype, then request the sequence from that ' +
+        'request cdna or genomic from it. Use canonicalTranscript from ensembl_lookup_gene; ' +
+        'expand_transcripts=true adds transcript biotypes, then request the sequence from that ' +
         'transcript ID.',
     },
     {
@@ -319,7 +319,7 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
             throw ctx.fail(
               'type_mismatch',
               `Cannot request type "${input.type}" from a gene ID — use a transcript or protein stable ID instead. ` +
-                `Call ensembl_lookup_gene with expand_transcripts=true to get transcript IDs.`,
+                `Use canonicalTranscript from ensembl_lookup_gene, or expand_transcripts=true for all transcript IDs.`,
             );
           }
           if (notFound) {
