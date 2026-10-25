@@ -13,6 +13,7 @@ import { ensemblListSpecies } from '@/mcp-server/tools/definitions/list-species.
 import { ensemblLookupGene } from '@/mcp-server/tools/definitions/lookup-gene.tool.js';
 import { ensemblPredictVariant } from '@/mcp-server/tools/definitions/predict-variant.tool.js';
 import { ensemblQueryRegion } from '@/mcp-server/tools/definitions/query-region.tool.js';
+import { renderHeading } from '@/mcp-server/tools/render-heading.js';
 import { readMarkdownText } from '../helpers/read-markdown.js';
 
 const getXrefsById = vi.fn();
@@ -236,6 +237,13 @@ const occurrences = {
 };
 
 describe('CommonMark result parity', () => {
+  it.each(['A ### ', 'A # B', 'A\\ #', 'A\\#', ' A #', 'A\n', '\nA', '\n', 'A\n\nB'])(
+    'preserves literal heading text %j',
+    (title) => {
+      expect(readMarkdownText(renderHeading(2, title))).toBe(title);
+    },
+  );
+
   it.each(cases)(
     '%s preserves literal upstream text at every rendered occurrence',
     (name, render) => {
@@ -267,6 +275,16 @@ describe('CommonMark result parity', () => {
     expect(
       readMarkdownText(result.content.map((b) => (b.type === 'text' ? b.text : '')).join('\n')),
     ).toContain(marker);
+  });
+
+  it.each(['A #', 'A ###', '#', 'A\t##'])('preserves closing heading hashes in %j', async (id) => {
+    getXrefsById.mockResolvedValueOnce([]);
+    const result = await runToolContract(ensemblGetXrefs, { id });
+    expect(result.structuredContent).toMatchObject({ queriedId: id });
+    const text = readMarkdownText(
+      result.content.map((b) => (b.type === 'text' ? b.text : '')).join('\n'),
+    );
+    expect(text.split(id).length - 1).toBe(2);
   });
 
   it('escapes only the rendered notice, preserving its raw structured value', async () => {
