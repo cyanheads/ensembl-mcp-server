@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensemblPredictVariant } from '@/mcp-server/tools/definitions/predict-variant.tool.js';
 import { initEnsemblService } from '@/services/ensembl/ensembl-service.js';
 import type { VepRecord } from '@/services/ensembl/types.js';
+import { readMarkdownText } from '../helpers/read-markdown.js';
 
 const mockPredictVariantHgvs = vi.fn();
 const mockPredictVariantRegion = vi.fn();
@@ -512,7 +513,7 @@ describe('ensemblPredictVariant through EnsemblService (issues #34, #37)', () =>
         error: { code, data: { reason, recovery: { hint: recovery(reason) } } },
       });
       const text = contentText(result);
-      expect(text).toContain(error);
+      expect(readMarkdownText(text)).toContain(error);
       expect(text).toContain(`Recovery: ${recovery(reason)}`);
       expect(text).toContain(`(reason ${reason})`);
       // A 400 input rejection is answered once, never retried as an outage.

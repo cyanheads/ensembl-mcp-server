@@ -15,6 +15,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensemblGetSequence } from '@/mcp-server/tools/definitions/get-sequence.tool.js';
 import { initEnsemblService } from '@/services/ensembl/ensembl-service.js';
+import { readMarkdownText } from '../helpers/read-markdown.js';
 
 const SEQUENCE_ID = /^https:\/\/rest\.ensembl\.org\/sequence\/id\//;
 const SEQUENCE_REGION = /^https:\/\/rest\.ensembl\.org\/sequence\/region\//;
@@ -302,7 +303,7 @@ describe('ensembl_get_sequence region grammar (issues #29, #36)', () => {
         },
       });
       const text = textOf(result);
-      expect(text).toContain('[species:]chr:start-end');
+      expect(readMarkdownText(text)).toContain('[species:]chr:start-end');
       expect(text).toContain('(reason invalid_region)');
       expect(http.calls).toHaveLength(0);
     },
