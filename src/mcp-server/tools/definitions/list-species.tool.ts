@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 
 const DIVISION_VALUES = [
@@ -124,6 +125,10 @@ export const ensemblListSpecies = tool('ensembl_list_species', {
     cap: z.number().optional().describe('The max_results limit applied to this page.'),
   },
 
+  enrichmentTrailer: {
+    notice: { render: (value) => (value === undefined ? '' : `> ${escapeMarkdownInline(value)}`) },
+  },
+
   async handler(input, ctx) {
     ctx.log.info('Listing species', {
       division: input.division,
@@ -196,12 +201,12 @@ export const ensemblListSpecies = tool('ensembl_list_species', {
     if (result.nextOffset !== undefined) lines.push(`**Next offset:** ${result.nextOffset}\n`);
     for (const s of result.species) {
       const label = s.displayName ?? s.name;
-      const common = s.commonName ? ` (${s.commonName})` : '';
-      lines.push(`**${label}**${common}`);
-      lines.push(`- Internal name: \`${s.name}\``);
-      if (s.assembly) lines.push(`- Assembly: ${s.assembly}`);
-      if (s.taxonId) lines.push(`- Taxon ID: ${s.taxonId}`);
-      if (s.division) lines.push(`- Division: ${s.division}`);
+      const common = s.commonName ? ` (${escapeMarkdownInline(s.commonName)})` : '';
+      lines.push(`**${escapeMarkdownInline(label)}**${common}`);
+      lines.push(`- Internal name: ${escapeMarkdownInline(s.name)}`);
+      if (s.assembly) lines.push(`- Assembly: ${escapeMarkdownInline(s.assembly)}`);
+      if (s.taxonId) lines.push(`- Taxon ID: ${escapeMarkdownInline(s.taxonId)}`);
+      if (s.division) lines.push(`- Division: ${escapeMarkdownInline(s.division)}`);
       lines.push('');
     }
     return [{ type: 'text', text: lines.join('\n') }];

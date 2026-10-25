@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import {
   isMitochondrionAlias,
   isReversed,
@@ -13,6 +14,7 @@ import {
   parseRegion,
   reversedMessage,
 } from '@/mcp-server/tools/region-grammar.js';
+import { renderHeading } from '@/mcp-server/tools/render-heading.js';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 import type { SequenceRecord } from '@/services/ensembl/types.js';
 
@@ -155,6 +157,10 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
         'Guidance about the window: how to continue when truncated, or why it is empty when the ' +
           'offset is past the end.',
       ),
+  },
+
+  enrichmentTrailer: {
+    notice: { render: (value) => (value === undefined ? '' : `> ${escapeMarkdownInline(value)}`) },
   },
 
   errors: [
@@ -370,10 +376,13 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
 
   format: (result) => {
     const lines: string[] = [];
-    lines.push(`## Sequence: ${result.id}`);
+    lines.push(renderHeading(2, `Sequence: ${result.id}`));
     const unit = result.type === 'protein' ? 'residues' : 'bp';
-    lines.push(`**Type:** ${result.type} | **Length:** ${result.length.toLocaleString()} ${unit}`);
-    if (result.description) lines.push(`**Description:** ${result.description}`);
+    lines.push(
+      `**Type:** ${escapeMarkdownInline(result.type)} | **Length:** ${result.length.toLocaleString()} ${unit}`,
+    );
+    if (result.description)
+      lines.push(`**Description:** ${escapeMarkdownInline(result.description)}`);
     const extent = result.truncated
       ? `truncated; next offset ${result.nextOffset}`
       : 'not truncated (nothing follows this window)';

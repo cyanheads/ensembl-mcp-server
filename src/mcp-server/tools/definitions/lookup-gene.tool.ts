@@ -7,6 +7,8 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import { renderHeading } from '@/mcp-server/tools/render-heading.js';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 import type { GeneRecord } from '@/services/ensembl/types.js';
 
@@ -247,6 +249,10 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
     notice: z.string().optional().describe('Guidance for resubmitting unattempted batch queries.'),
   },
 
+  enrichmentTrailer: {
+    notice: { render: (value) => (value === undefined ? '' : `> ${escapeMarkdownInline(value)}`) },
+  },
+
   errors: [
     {
       reason: 'not_found',
@@ -468,22 +474,23 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
     const lines: string[] = [];
 
     type GeneItem = NonNullable<(typeof result)['gene']> & { query?: string };
-    const renderGene = (g: GeneItem, heading = '##') => {
-      lines.push(`${heading} ${g.displayName ?? g.id}`);
-      lines.push(`**ID:** ${g.id}`);
-      if (g.canonicalTranscript) lines.push(`**Canonical transcript:** ${g.canonicalTranscript}`);
-      if (g.parentGeneId) lines.push(`**Parent gene:** ${g.parentGeneId}`);
-      if (g.query) lines.push(`**Query:** ${g.query}`);
-      if (g.matchedAlias) lines.push(`**Matched alias:** ${g.matchedAlias}`);
-      if (g.species) lines.push(`**Species:** ${g.species}`);
-      if (g.biotype) lines.push(`**Biotype:** ${g.biotype}`);
-      if (g.description) lines.push(`**Description:** ${g.description}`);
-      if (g.chromosome) lines.push(`**Chromosome:** ${g.chromosome}`);
+    const renderGene = (g: GeneItem, level: 2 | 3 | 4 = 2) => {
+      lines.push(renderHeading(level, g.displayName ?? g.id));
+      lines.push(`**ID:** ${escapeMarkdownInline(g.id)}`);
+      if (g.canonicalTranscript)
+        lines.push(`**Canonical transcript:** ${escapeMarkdownInline(g.canonicalTranscript)}`);
+      if (g.parentGeneId) lines.push(`**Parent gene:** ${escapeMarkdownInline(g.parentGeneId)}`);
+      if (g.query) lines.push(`**Query:** ${escapeMarkdownInline(g.query)}`);
+      if (g.matchedAlias) lines.push(`**Matched alias:** ${escapeMarkdownInline(g.matchedAlias)}`);
+      if (g.species) lines.push(`**Species:** ${escapeMarkdownInline(g.species)}`);
+      if (g.biotype) lines.push(`**Biotype:** ${escapeMarkdownInline(g.biotype)}`);
+      if (g.description) lines.push(`**Description:** ${escapeMarkdownInline(g.description)}`);
+      if (g.chromosome) lines.push(`**Chromosome:** ${escapeMarkdownInline(g.chromosome)}`);
       if (g.start != null) lines.push(`**Start:** ${g.start}`);
       if (g.end != null) lines.push(`**End:** ${g.end}`);
       if (g.strand != null)
         lines.push(`**Strand:** ${g.strand} (${g.strand === -1 ? 'reverse' : 'forward'})`);
-      if (g.assemblyName) lines.push(`**Assembly:** ${g.assemblyName}`);
+      if (g.assemblyName) lines.push(`**Assembly:** ${escapeMarkdownInline(g.assemblyName)}`);
       if (g.transcripts?.length) {
         lines.push(`\n**Transcripts (${g.transcripts.length}):**`);
         for (const t of g.transcripts) {
@@ -494,7 +501,7 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
               : '';
           const len = t.lengthInBp != null ? ` ${t.lengthInBp}bp` : '';
           lines.push(
-            `- ${t.id}${t.displayName ? ` (${t.displayName})` : ''}${canon}${t.maneSelect ? ` | MANE Select: ${t.maneSelect}` : ''}${t.biotype ? ` [${t.biotype}]` : ''}${loc}${len}`,
+            `- ${escapeMarkdownInline(t.id)}${t.displayName ? ` (${escapeMarkdownInline(t.displayName)})` : ''}${canon}${t.maneSelect ? ` | MANE Select: ${escapeMarkdownInline(t.maneSelect)}` : ''}${t.biotype ? ` [${escapeMarkdownInline(t.biotype)}]` : ''}${loc}${len}`,
           );
         }
       }
@@ -505,11 +512,11 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
     }
     if (result.ambiguous) {
       const { query, candidates, guidance } = result.ambiguous;
-      lines.push(`## Ambiguous symbol: ${query}`);
-      lines.push(guidance);
+      lines.push(renderHeading(2, `Ambiguous symbol: ${query}`));
+      lines.push(escapeMarkdownInline(guidance));
       for (const c of candidates) {
         lines.push('');
-        renderGene(c, '###');
+        renderGene(c, 3);
       }
     }
     if (result.batch) {
@@ -523,21 +530,23 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       if (failed.length > 0) {
         lines.push('### Failed lookups');
         for (const f of failed) {
-          lines.push(`- **${f.query}** (${f.reason}): ${f.error}`);
+          lines.push(
+            `- **${escapeMarkdownInline(f.query)}** (${escapeMarkdownInline(f.reason)}): ${escapeMarkdownInline(f.error)}`,
+          );
           for (const c of f.candidates ?? []) {
             lines.push('');
-            renderGene(c, '####');
+            renderGene(c, 4);
           }
           if (f.candidates?.length) lines.push('');
         }
         lines.push('\n### Recovery');
         for (const recovery of new Set(failed.map((f) => f.recovery))) {
-          lines.push(`- ${recovery}`);
+          lines.push(`- ${escapeMarkdownInline(recovery)}`);
         }
       }
       if (omitted.length) {
         lines.push(`\n### Omitted (${omitted.length}) — not attempted`);
-        for (const query of omitted) lines.push(`- ${query}`);
+        for (const query of omitted) lines.push(`- ${escapeMarkdownInline(query)}`);
         lines.push('Resubmit these queries in another call.');
       }
     }

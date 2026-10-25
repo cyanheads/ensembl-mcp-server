@@ -5,6 +5,8 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import { renderHeading } from '@/mcp-server/tools/render-heading.js';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 import type { HomologyEntry } from '@/services/ensembl/types.js';
 
@@ -160,6 +162,10 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       .describe('True when the homolog list was capped at max_results.'),
     shown: z.number().optional().describe('Number of homologs returned after the max_results cap.'),
     cap: z.number().optional().describe('The max_results limit applied to the homolog list.'),
+  },
+
+  enrichmentTrailer: {
+    notice: { render: (value) => (value === undefined ? '' : `> ${escapeMarkdownInline(value)}`) },
   },
 
   errors: [
@@ -322,11 +328,11 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
 
   format: (result) => {
     const lines: string[] = [];
-    lines.push(`## Homologs of ${result.queryId} (${result.querySpecies})`);
+    lines.push(renderHeading(2, `Homologs of ${result.queryId} (${result.querySpecies})`));
     const shown = result.homologs.length;
     const foundLabel =
       result.totalCount > shown ? `${shown} of ${result.totalCount}` : `${result.totalCount}`;
-    lines.push(`**Type:** ${result.queryType} | **Found:** ${foundLabel}\n`);
+    lines.push(`**Type:** ${escapeMarkdownInline(result.queryType)} | **Found:** ${foundLabel}\n`);
 
     if (result.homologs.length === 0) {
       lines.push('No homologs found. Try type=all or remove the target_species filter.');
@@ -334,14 +340,16 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     }
 
     for (const h of result.homologs) {
-      lines.push(`### ${h.targetId}`);
-      if (h.targetSymbol) lines.push(`**Gene symbol:** ${h.targetSymbol}`);
-      if (h.targetProteinId) lines.push(`**Protein ID:** ${h.targetProteinId}`);
-      if (h.targetSpecies) lines.push(`**Species:** ${h.targetSpecies}`);
-      if (h.type) lines.push(`**Homology type:** ${h.type}`);
+      lines.push(renderHeading(3, h.targetId));
+      if (h.targetSymbol) lines.push(`**Gene symbol:** ${escapeMarkdownInline(h.targetSymbol)}`);
+      if (h.targetProteinId)
+        lines.push(`**Protein ID:** ${escapeMarkdownInline(h.targetProteinId)}`);
+      if (h.targetSpecies) lines.push(`**Species:** ${escapeMarkdownInline(h.targetSpecies)}`);
+      if (h.type) lines.push(`**Homology type:** ${escapeMarkdownInline(h.type)}`);
       if (h.percId != null) lines.push(`**Percent identity:** ${h.percId.toFixed(1)}%`);
       if (h.percPos != null) lines.push(`**Percent positives:** ${h.percPos.toFixed(1)}%`);
-      if (h.taxonomyLevel) lines.push(`**Last common ancestor:** ${h.taxonomyLevel}`);
+      if (h.taxonomyLevel)
+        lines.push(`**Last common ancestor:** ${escapeMarkdownInline(h.taxonomyLevel)}`);
       lines.push('');
     }
 

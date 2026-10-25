@@ -5,6 +5,8 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import { renderHeading } from '@/mcp-server/tools/render-heading.js';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 
 const XrefEntrySchema = z.object({
@@ -89,6 +91,10 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
     notice: z.string().optional().describe('Guidance when no cross-references are found.'),
   },
 
+  enrichmentTrailer: {
+    notice: { render: (value) => (value === undefined ? '' : `> ${escapeMarkdownInline(value)}`) },
+  },
+
   errors: [
     {
       reason: 'not_found',
@@ -132,7 +138,7 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
 
   format: (result) => {
     const lines: string[] = [];
-    lines.push(`## Cross-References for ${result.queriedId}`);
+    lines.push(renderHeading(2, `Cross-References for ${result.queriedId}`));
     lines.push(`**Total:** ${result.totalCount}\n`);
 
     if (result.xrefs.length === 0) {
@@ -150,11 +156,17 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
 
     for (const [db, entries] of byDb) {
       const displayName = entries[0]?.dbDisplayName;
-      lines.push(`### ${displayName ?? db}${displayName && displayName !== db ? ` (${db})` : ''}`);
+      lines.push(
+        renderHeading(
+          3,
+          `${displayName ?? db}${displayName && displayName !== db ? ` (${db})` : ''}`,
+        ),
+      );
       for (const x of entries) {
-        let line = `- **${x.primaryId ?? x.displayId ?? 'unknown'}**`;
-        if (x.displayId && x.displayId !== x.primaryId) line += ` (${x.displayId})`;
-        if (x.description) line += `: ${x.description}`;
+        let line = `- **${escapeMarkdownInline(x.primaryId ?? x.displayId ?? 'unknown')}**`;
+        if (x.displayId && x.displayId !== x.primaryId)
+          line += ` (${escapeMarkdownInline(x.displayId)})`;
+        if (x.description) line += `: ${escapeMarkdownInline(x.description)}`;
         lines.push(line);
       }
       lines.push('');

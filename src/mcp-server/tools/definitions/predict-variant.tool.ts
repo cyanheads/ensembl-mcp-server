@@ -5,6 +5,8 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import { renderHeading } from '@/mcp-server/tools/render-heading.js';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 import type { VepRecord } from '@/services/ensembl/types.js';
 
@@ -265,6 +267,10 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
     cap: z.number().optional().describe('The max_transcript_consequences limit applied.'),
   },
 
+  enrichmentTrailer: {
+    notice: { render: (value) => (value === undefined ? '' : `> ${escapeMarkdownInline(value)}`) },
+  },
+
   errors: [
     {
       reason: 'invalid_notation',
@@ -462,29 +468,29 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
     }
 
     for (const r of result.results) {
-      lines.push(`\n### Variant: ${r.input ?? 'unknown'}`);
-      if (r.alleleString) lines.push(`**Alleles:** ${r.alleleString}`);
+      lines.push(`\n${renderHeading(3, `Variant: ${r.input ?? 'unknown'}`)}`);
+      if (r.alleleString) lines.push(`**Alleles:** ${escapeMarkdownInline(r.alleleString)}`);
       if (r.chromosome && r.start != null) {
         lines.push(
-          `**Location:** ${r.chromosome}:${r.start}${r.end !== r.start ? `-${r.end}` : ''}${r.assemblyName ? ` [${r.assemblyName}]` : ''}`,
+          `**Location:** ${escapeMarkdownInline(r.chromosome)}:${r.start}${r.end !== r.start ? `-${r.end}` : ''}${r.assemblyName ? ` [${escapeMarkdownInline(r.assemblyName)}]` : ''}`,
         );
       }
       if (r.mostSevereConsequence) {
-        lines.push(`**Most severe consequence:** ${r.mostSevereConsequence}`);
+        lines.push(`**Most severe consequence:** ${escapeMarkdownInline(r.mostSevereConsequence)}`);
       }
 
       if (r.colocatedVariants.length > 0) {
         lines.push(`\n**Known colocated variants:**`);
         for (const cv of r.colocatedVariants) {
-          let cvLine = `- ${cv.id ?? 'novel'}`;
-          if (cv.alleleString) cvLine += ` (${cv.alleleString})`;
+          let cvLine = `- ${escapeMarkdownInline(cv.id ?? 'novel')}`;
+          if (cv.alleleString) cvLine += ` (${escapeMarkdownInline(cv.alleleString)})`;
           if (cv.clinicalSignificance?.length) {
-            cvLine += ` — aggregate clinical significance: ${cv.clinicalSignificance.join(', ')}`;
+            cvLine += ` — aggregate clinical significance: ${escapeMarkdownInline(cv.clinicalSignificance.join(', '))}`;
           }
           if (cv.clinicalSignificanceReferenceAllele)
-            cvLine += ` | Clinical reference allele: ${cv.clinicalSignificanceReferenceAllele}`;
+            cvLine += ` | Clinical reference allele: ${escapeMarkdownInline(cv.clinicalSignificanceReferenceAllele)}`;
           for (const [allele, terms] of Object.entries(cv.clinicalSignificanceByAllele ?? {}))
-            cvLine += ` | ${allele}: ${terms.join(', ')}`;
+            cvLine += ` | ${escapeMarkdownInline(allele)}: ${escapeMarkdownInline(terms.join(', '))}`;
           if (cv.pubmed?.length) {
             const pubmedTotal = cv.pubmedTotal ?? cv.pubmed.length;
             const pubmedSuffix =
@@ -504,24 +510,28 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
         lines.push(`\n**Transcript consequences (${tcCount}):**`);
         for (const tc of r.transcriptConsequences) {
           const geneLabel = tc.geneSymbol ?? tc.geneId ?? 'unknown';
-          lines.push(`\n#### ${geneLabel} — ${tc.transcriptId ?? 'unknown'}`);
-          if (tc.variantAllele) lines.push(`**Variant allele:** ${tc.variantAllele}`);
+          lines.push(`\n${renderHeading(4, `${geneLabel} — ${tc.transcriptId ?? 'unknown'}`)}`);
+          if (tc.variantAllele)
+            lines.push(`**Variant allele:** ${escapeMarkdownInline(tc.variantAllele)}`);
           if (tc.canonical != null) lines.push(`**Ensembl canonical:** ${tc.canonical}`);
-          if (tc.maneSelect) lines.push(`**MANE Select:** ${tc.maneSelect}`);
-          if (tc.geneId && tc.geneSymbol) lines.push(`**Gene ID:** ${tc.geneId}`);
+          if (tc.maneSelect) lines.push(`**MANE Select:** ${escapeMarkdownInline(tc.maneSelect)}`);
+          if (tc.geneId && tc.geneSymbol)
+            lines.push(`**Gene ID:** ${escapeMarkdownInline(tc.geneId)}`);
           lines.push(
-            `**Impact:** ${tc.impact ?? 'UNKNOWN'} | **Consequence:** ${tc.consequenceTerms.join(', ')}`,
+            `**Impact:** ${escapeMarkdownInline(tc.impact ?? 'UNKNOWN')} | **Consequence:** ${escapeMarkdownInline(tc.consequenceTerms.join(', '))}`,
           );
-          if (tc.biotype) lines.push(`**Biotype:** ${tc.biotype}`);
-          if (tc.hgvsc) lines.push(`**HGVSc:** ${tc.hgvsc}`);
-          if (tc.hgvsp) lines.push(`**HGVSp:** ${tc.hgvsp}`);
-          if (tc.aminoAcids) lines.push(`**Amino acids:** ${tc.aminoAcids}`);
+          if (tc.biotype) lines.push(`**Biotype:** ${escapeMarkdownInline(tc.biotype)}`);
+          if (tc.hgvsc) lines.push(`**HGVSc:** ${escapeMarkdownInline(tc.hgvsc)}`);
+          if (tc.hgvsp) lines.push(`**HGVSp:** ${escapeMarkdownInline(tc.hgvsp)}`);
+          if (tc.aminoAcids) lines.push(`**Amino acids:** ${escapeMarkdownInline(tc.aminoAcids)}`);
           if (tc.sift) {
-            lines.push(`**SIFT:** ${tc.sift.prediction} (score: ${tc.sift.score.toFixed(3)})`);
+            lines.push(
+              `**SIFT:** ${escapeMarkdownInline(tc.sift.prediction)} (score: ${tc.sift.score.toFixed(3)})`,
+            );
           }
           if (tc.polyphen) {
             lines.push(
-              `**PolyPhen:** ${tc.polyphen.prediction} (score: ${tc.polyphen.score.toFixed(3)})`,
+              `**PolyPhen:** ${escapeMarkdownInline(tc.polyphen.prediction)} (score: ${tc.polyphen.score.toFixed(3)})`,
             );
           }
         }

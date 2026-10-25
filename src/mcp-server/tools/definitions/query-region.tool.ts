@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import {
   isMitochondrionAlias,
   isReversed,
@@ -14,6 +15,7 @@ import {
   parseRegion,
   reversedMessage,
 } from '@/mcp-server/tools/region-grammar.js';
+import { renderHeading } from '@/mcp-server/tools/render-heading.js';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 
 const FEATURE_TYPES = ['gene', 'transcript', 'variation', 'regulatory', 'exon'] as const;
@@ -176,6 +178,10 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
       .describe('True when the feature list was capped at max_results.'),
     shown: z.number().optional().describe('Number of features returned after the max_results cap.'),
     cap: z.number().optional().describe('The max_results limit applied to the feature list.'),
+  },
+
+  enrichmentTrailer: {
+    notice: { render: (value) => (value === undefined ? '' : `> ${escapeMarkdownInline(value)}`) },
   },
 
   errors: [
@@ -351,8 +357,9 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
 
   format: (result) => {
     const lines: string[] = [];
-    lines.push(`## Genomic Region: ${result.species} ${result.region}`);
-    if (result.assemblyName) lines.push(`**Assembly:** ${result.assemblyName}`);
+    lines.push(renderHeading(2, `Genomic Region: ${result.species} ${result.region}`));
+    if (result.assemblyName)
+      lines.push(`**Assembly:** ${escapeMarkdownInline(result.assemblyName)}`);
     const shown = result.features.length;
     const found =
       result.totalCount > shown ? `${shown} of ${result.totalCount}` : `${result.totalCount}`;
@@ -365,22 +372,25 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
 
     for (const f of result.features) {
       const label = f.name ?? f.id ?? f.featureType;
-      lines.push(`### ${label}`);
-      if (f.id) lines.push(`**ID:** ${f.id}`);
-      lines.push(`**Type:** ${f.featureType}`);
-      if (f.biotype) lines.push(`**Biotype:** ${f.biotype}`);
+      lines.push(renderHeading(3, label));
+      if (f.id) lines.push(`**ID:** ${escapeMarkdownInline(f.id)}`);
+      lines.push(`**Type:** ${escapeMarkdownInline(f.featureType)}`);
+      if (f.biotype) lines.push(`**Biotype:** ${escapeMarkdownInline(f.biotype)}`);
       lines.push(
-        `**Location:** ${f.chromosome}:${f.start}-${f.end}${f.strand != null ? ` strand:${f.strand} (${f.strand === -1 ? '-' : '+'})` : ''}`,
+        `**Location:** ${escapeMarkdownInline(f.chromosome)}:${f.start}-${f.end}${f.strand != null ? ` strand:${f.strand} (${f.strand === -1 ? '-' : '+'})` : ''}`,
       );
       if (f.parentId) {
         lines.push(
-          `**Parent transcript:** ${f.parentId}${f.rank != null ? ` (exon rank ${f.rank})` : ''}`,
+          `**Parent transcript:** ${escapeMarkdownInline(f.parentId)}${f.rank != null ? ` (exon rank ${f.rank})` : ''}`,
         );
       }
-      if (f.description) lines.push(`**Description:** ${f.description}`);
-      if (f.consequenceType) lines.push(`**Consequence:** ${f.consequenceType}`);
+      if (f.description) lines.push(`**Description:** ${escapeMarkdownInline(f.description)}`);
+      if (f.consequenceType)
+        lines.push(`**Consequence:** ${escapeMarkdownInline(f.consequenceType)}`);
       if (f.clinicalSignificance?.length) {
-        lines.push(`**Clinical significance:** ${f.clinicalSignificance.join(', ')}`);
+        lines.push(
+          `**Clinical significance:** ${escapeMarkdownInline(f.clinicalSignificance.join(', '))}`,
+        );
       }
       lines.push('');
     }
