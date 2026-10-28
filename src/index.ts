@@ -55,6 +55,7 @@ await createApp({
     ensemblSpeciesByDivisionResource,
   ],
   prompts: [ensemblGeneDossierPrompt],
+  skills: 'skills',
   instructions: `Ensembl genomics server — vertebrate and model organism gene, sequence, and variant data.
 Species names use Ensembl internal format: lowercase_underscore scientific names (homo_sapiens, mus_musculus).
 Discovery workflow: ensembl_list_species (nameContains finds a species by common or scientific name; results come 50 at a time) → ensembl_lookup_gene → ensembl_get_sequence / ensembl_get_xrefs / ensembl_get_homology.
