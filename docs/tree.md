@@ -1,6 +1,6 @@
 # ensembl-mcp-server - Directory Structure
 
-Generated on: 2026-10-25 09:31:53
+Generated on: 2026-10-28 12:58:49
 
 ```text
 ensembl-mcp-server/
@@ -30,6 +30,7 @@ ensembl-mcp-server/
 │   ├── 0.4.x/
 │   ├── 0.5.x/
 │   ├── 0.6.x/
+│   ├── 0.7.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -42,6 +43,8 @@ ensembl-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -139,6 +142,9 @@ ensembl-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── ensembl-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -179,6 +185,8 @@ ensembl-mcp-server/
 │   │   ├── gene.resource.test.ts
 │   │   ├── species.resource.test.ts
 │   │   └── transcript.resource.test.ts
+│   ├── scripts/
+│   │   └── mcpb-agent-docs.test.ts
 │   ├── services/
 │   │   └── ensembl-service.test.ts
 │   └── tools/
@@ -210,7 +218,9 @@ ensembl-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json

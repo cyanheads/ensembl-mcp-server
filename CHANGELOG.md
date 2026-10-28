@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-10-28
+
+Publishes the ensembl-guide agent skill as an MCP resource and moves to mcp-ts-core 0.13.18, whose HTTP transport no longer retains memory on every request.
+
 ## [0.6.2](changelog/0.6.x/0.6.2.md) — 2026-10-25
 
 Preserve literal text in genomics responses
