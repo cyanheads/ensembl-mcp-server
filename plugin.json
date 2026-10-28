@@ -1,0 +1,34 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ensembl-mcp-server",
+  "version": "0.6.2",
+  "description": "Look up genes, fetch sequences, predict variant consequences, find orthologs, and retrieve cross-database xrefs from Ensembl REST via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/ensembl-mcp-server#readme",
+  "repository": "git+https://github.com/cyanheads/ensembl-mcp-server.git",
+  "license": "Apache-2.0",
+  "keywords": [
+    "ensembl",
+    "genomics",
+    "bioinformatics",
+    "genes",
+    "sequences",
+    "variants",
+    "vep",
+    "homology",
+    "orthologs",
+    "rest-ensembl",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http",
+    "ai-agent"
+  ]
+}
