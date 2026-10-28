@@ -201,7 +201,7 @@ This is a Prompt, not a tool — it guides the agent through:
 
 - **No BLAST / sequence similarity search.** Ensembl REST doesn't expose BLAST; that would require a different server (EMBL-EBI APIs).
 - **Regulation and splice variants are partial.** The `regulatory` feature type in region queries returns basic regulatory elements but not full regulatory build annotation. Detailed splice isoform work is better done through Ensembl's bulk FTP downloads.
-- **Non-vertebrate species coverage varies.** EnsemblGenomes (plants, fungi, metazoa, protists) is accessed via separate API endpoints (`https://rest.ensembl.org` handles some; others require `https://plants.rest.ensembl.org`). The `ENSEMBL_BASE_URL` override handles this for non-vertebrate teams.
+- **Non-vertebrate homology stays in its division.** `https://rest.ensembl.org` serves the plant, fungal, metazoan, and protist genomes alongside the vertebrates, but Compara homology for a non-vertebrate gene searches only that gene's own division: a fly gene has no `homo_sapiens` target, while the human gene reaches the fly ortholog.
 - **VEP batch POST not supported in v0.1.0.** The REST API also exposes `POST /vep/{species}/hgvs` and `POST /vep/{species}/region` for bulk annotation of many variants in one call. The GET endpoints (`/vep/{species}/hgvs/{notation}` and `/vep/{species}/region/{region}/{allele}`) cover single-variant use; batch VEP is deferred.
 - **Sequence windows refetch the whole sequence.** The API has no pagination for sequences, so each window is sliced from a full fetch: walking all of TTN's 304,814 bp at the default window is 31 requests for the same payload. Set `max_length` to `0` (or a larger window) when the whole sequence is wanted.
 
