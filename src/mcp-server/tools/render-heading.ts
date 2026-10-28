@@ -9,6 +9,5 @@ import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 export function renderHeading(level: 2 | 3 | 4, title: string): string {
   const text = escapeMarkdownInline(title);
   if (/[\r\n]/.test(title)) return `**${text}**`;
-  // ATX headings consume a final hash run preceded by whitespace as a closing marker.
-  return `${'#'.repeat(level)} ${text.replace(/(?<=[ \t])#+$/, '\\$&')}`;
+  return `${'#'.repeat(level)} ${text}`;
 }

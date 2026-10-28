@@ -39,7 +39,7 @@ Match stderr (case-insensitive) against any of these — if matched, the failure
 - `timed out` / `request timeout` — server or network timeout
 - HTTP `502` / `503` / `504` — transient registry error
 
-**Before retrying `docker buildx --push` (step 9)**, run `docker builder prune -f` to drop any cached corrupt layer. Skip this extra step for other retries.
+**Docker retries (step 9) preserve shared build caches.** Retry the failed build without pruning. If evidence points to a corrupt cached layer, retry that build with `--no-cache`; never run `docker builder prune` or other shared-resource cleanup as part of a release.
 
 ### Never retry on idempotent-success signals
 
@@ -197,7 +197,9 @@ Halt on publish error other than "version already exists" (which means this step
 
 Only if `server.json` exists at the repo root (otherwise skip). Note: `server.json` (MCP Registry metadata) and `manifest.json` (MCPB bundle manifest, step 8) are independent — a project may have either, both, or neither.
 
-The registry checks that the npm version exists before it registers, and npm's read endpoint can lag `bun publish` by several minutes. Wait for the version to be served before publishing; a publisher error saying the npm version was not found is this lag, not a terminal failure. Keep each wait inside one foreground shell call: every request carries its own timeout and the loop is bounded well under the agent's command timeout, so the harness never moves the wait to the background. If the loop ends unserved, run it again.
+The registry checks that the npm version exists before it registers. [npm's publish-time scanning](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/) can keep an accepted version unavailable for five to fifteen minutes or longer. Wait for the exact version to be served before publishing; a missing version is not by itself a failed publish. Keep each wait inside one foreground shell call: every request carries its own timeout and the loop is bounded well under the agent's command timeout, so the harness never moves the wait to the background. If the loop ends unserved, run it again.
+
+For a prolonged delay, query the [npm package-version status API](https://api-docs.npmjs.com/) at `/-/package/<URL-encoded-package-name>/version/<version>/status` with the existing publish-access bearer token, kept out of logs and command arguments. Pending validation calls for waiting, not republishing; report a terminal block or required manual approval. The endpoint's `403` means the status API is not enabled for that package, so fall back to bounded public-version checks.
 
 ```bash
 for i in $(seq 1 15); do
@@ -207,7 +209,7 @@ done
 bun run publish-mcp
 ```
 
-Step 8 depends only on the pushed tag, so it may run while this wait is in progress.
+Steps 8 and 9 are independent of npm availability and may run while this wait is in progress.
 
 If `publish-mcp` isn't defined in `package.json`, add it permanently (one-time setup, macOS):
 
