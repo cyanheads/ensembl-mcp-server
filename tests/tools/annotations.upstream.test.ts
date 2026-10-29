@@ -380,3 +380,66 @@ describe('lookup identity annotations', () => {
     });
   });
 });
+
+describe('unversioned canonical transcript (issue #56)', () => {
+  /** Fly p53 as Ensembl returns it: `canonical_transcript` ends in the empty version's dot. */
+  const fly = {
+    id: 'FBgn0039044',
+    display_name: 'p53',
+    species: 'drosophila_melanogaster',
+    canonical_transcript: 'FBtr0084360.',
+  };
+
+  /** Answers every lookup path for the fly gene; the symbol path misses to reach alias resolution. */
+  function routeFly(aliasOnly: boolean) {
+    http.route({
+      match: (request) => new URL(request.url).hostname === 'rest.ensembl.org',
+      respond: (request) => {
+        const { pathname } = new URL(request.url);
+        if (pathname.startsWith('/lookup/symbol/') && request.method === 'GET')
+          return aliasOnly
+            ? Response.json({ error: 'No valid lookup found for symbol p53' }, { status: 400 })
+            : Response.json(fly);
+        if (pathname.startsWith('/xrefs/symbol/'))
+          return Response.json([{ id: 'FBgn0039044', type: 'gene' }]);
+        if (request.method === 'POST')
+          return Response.json({
+            [pathname.startsWith('/lookup/symbol/') ? 'p53' : 'FBgn0039044']: fly,
+          });
+        return Response.json(fly);
+      },
+    });
+  }
+
+  const textOf = (content: { type: string; text?: string }[] | undefined) =>
+    (content ?? []).map((b) => b.text ?? '').join('\n');
+
+  it.each([
+    ['single symbol', { symbol: 'p53', species: 'drosophila_melanogaster' }, false],
+    ['single id', { id: 'FBgn0039044' }, false],
+    ['ids batch', { ids: ['FBgn0039044'] }, false],
+    ['symbols batch', { symbols: ['p53'], species: 'drosophila_melanogaster' }, false],
+    ['alias resolution', { symbol: 'p53', species: 'drosophila_melanogaster' }, true],
+  ])('%s returns the transcript ID without the empty-version dot', async (_p, input, alias) => {
+    routeFly(alias);
+    const result = await runToolContract(ensemblLookupGene, input);
+    expect(result.isError).toBeUndefined();
+    const structured = result.structuredContent as {
+      gene?: { canonicalTranscript?: string; matchedAlias?: string };
+      batch?: { succeeded: { canonicalTranscript?: string }[] };
+    };
+    const gene = structured.gene ?? structured.batch!.succeeded[0];
+    expect(gene?.canonicalTranscript).toBe('FBtr0084360');
+    if (alias) expect(structured.gene?.matchedAlias).toBe('p53');
+    expect(textOf(result.content).split('\n')).toContain('**Canonical transcript:** FBtr0084360');
+  });
+
+  it('returns the transcript ID without the empty-version dot from the gene resource', async () => {
+    routeFly(false);
+    const result = await ensemblGeneResource.handler(
+      { id: 'FBgn0039044' },
+      createMockContext({ errors: ensemblGeneResource.errors }),
+    );
+    expect(result).toMatchObject({ canonicalTranscript: 'FBtr0084360' });
+  });
+});

@@ -12,6 +12,7 @@ import {
   getEnrichment,
   runToolContract,
 } from '@cyanheads/mcp-ts-core/testing';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensemblGetHomology } from '@/mcp-server/tools/definitions/get-homology.tool.js';
 import { initEnsemblService } from '@/services/ensembl/ensembl-service.js';
@@ -581,6 +582,249 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
     expect(http.calls[0]?.request.url).toBe(
       'https://rest.ensembl.org/homology/id/homo_sapiens/ENSG00000139618?type=orthologues&target_species=saccharomyces_cerevisiae',
     );
+  });
+
+  it('suggests only type=all for no homologs when no target_species was set', async () => {
+    http.route({
+      match: HOMOLOGY,
+      respond: () => Response.json({ data: [{ id: 'ENSG00000139618', homologies: [] }] }),
+    });
+    const result = await runToolContract(ensemblGetHomology, { id: 'ENSG00000139618' });
+
+    expect(result.structuredContent).toMatchObject({
+      homologs: [],
+      notice: 'No orthologues found for "ENSG00000139618" in homo_sapiens. Try type=all.',
+    });
+  });
+
+  /** Upstream URLs of the homology requests the call sent, in order. */
+  const homologyUrls = () =>
+    http.calls
+      .map((call) => new URL(call.request.url))
+      .filter((url) => url.origin === 'https://rest.ensembl.org')
+      .filter((url) => url.pathname.startsWith('/homology/'))
+      .map(String);
+  const membershipReads = () =>
+    http.calls.filter(
+      (call) => new URL(call.request.url).pathname === '/info/compara/species_sets/PROTEIN_TREES',
+    ).length;
+
+  it('sends one homology request when the target is in the source species’ comparison (#55)', async () => {
+    http.route({
+      match: HOMOLOGY,
+      respond: () =>
+        Response.json({
+          data: [
+            {
+              id: TP53_ID,
+              homologies: [
+                {
+                  type: 'ortholog_one2many',
+                  taxonomy_level: 'Bilateria',
+                  target: { id: 'FBgn0039044', species: 'drosophila_melanogaster' },
+                },
+              ],
+            },
+          ],
+        }),
+    });
+    for (const args of [
+      { id: TP53_ID, target_species: 'drosophila_melanogaster' },
+      { id: TP53_ID },
+    ]) {
+      const result = await runToolContract(ensemblGetHomology, args);
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({
+        homologs: [{ targetId: 'FBgn0039044', taxonomyLevel: 'Bilateria' }],
+      });
+      expect(String((result.structuredContent as { notice?: string }).notice)).not.toContain(
+        'pan-taxonomic',
+      );
+    }
+    expect(homologyUrls()).toEqual([
+      `https://rest.ensembl.org/homology/id/homo_sapiens/${TP53_ID}?type=orthologues&target_species=drosophila_melanogaster`,
+      `https://rest.ensembl.org/homology/id/homo_sapiens/${TP53_ID}?type=orthologues`,
+    ]);
+    expect(membershipReads()).toBe(0);
+  });
+
+  describe('target outside the source species’ comparison (#55)', () => {
+    const FLY_GENE = 'FBgn0039044';
+    const HUMAN_TARGETS = ['ENSG00000078900', 'ENSG00000141510', 'ENSG00000073282'];
+    const PAN_NOTICE =
+      "homo_sapiens is outside the homology comparison Ensembl runs for drosophila_melanogaster, so this answer comes from Ensembl's pan-taxonomic comparison (pan_homology), whose taxonomyLevel can name a broader clade than the two species' last common ancestor.";
+    const ensemblUrl = (request: Request) => {
+      const url = new URL(request.url);
+      return url.origin === 'https://rest.ensembl.org' ? url : undefined;
+    };
+
+    beforeEach(() => {
+      http.route(
+        {
+          match: (request) =>
+            ensemblUrl(request)?.pathname === '/info/compara/species_sets/PROTEIN_TREES',
+          respond: () =>
+            Response.json([
+              {
+                species_set_group: 'collection-default',
+                method: 'PROTEIN_TREES',
+                species_set: ['drosophila_melanogaster', 'homo_sapiens', 'arabidopsis_thaliana'],
+              },
+            ]),
+        },
+        {
+          // The source's own comparison misses the target; the pan-taxonomic one answers.
+          match: (request) => ensemblUrl(request)?.pathname.startsWith('/homology/') === true,
+          respond: (request) => {
+            const params = new URL(request.url).searchParams;
+            if (params.get('compara') !== 'pan_homology') {
+              const target = params.get('target_species');
+              return Response.json(
+                { error: `Could not find a GenomeDB named '${target}'` },
+                { status: 400 },
+              );
+            }
+            // A gene outside the pan-taxonomic trees answers no data.
+            if (params.get('target_species') === 'arabidopsis_thaliana') {
+              return Response.json({ data: [] });
+            }
+            return Response.json({
+              data: [
+                {
+                  id: FLY_GENE,
+                  homologies: HUMAN_TARGETS.map((id) => ({
+                    type: 'ortholog_one2many',
+                    taxonomy_level: 'Metazoa',
+                    target: { id, species: 'homo_sapiens', perc_id: 14.7583 },
+                  })),
+                },
+              ],
+            });
+          },
+        },
+      );
+    });
+
+    it.each([
+      ['id', { id: FLY_GENE }, `/homology/id/drosophila_melanogaster/${FLY_GENE}`],
+      ['symbol', { symbol: 'p53' }, '/homology/symbol/drosophila_melanogaster/p53'],
+    ])(
+      'answers by %s from the pan-taxonomic comparison with its notice on both surfaces',
+      async (_mode, args, path) => {
+        const result = await runToolContract(ensemblGetHomology, {
+          ...args,
+          species: 'drosophila_melanogaster',
+          target_species: 'homo_sapiens',
+        });
+
+        expect(result.isError).toBeUndefined();
+        expect(result.structuredContent).toMatchObject({
+          queryId: FLY_GENE,
+          querySpecies: 'drosophila_melanogaster',
+          totalCount: 3,
+          notice: expect.stringMatching(/^homo_sapiens is outside the homology comparison/),
+        });
+        const { homologs, notice } = result.structuredContent as {
+          homologs: Array<{ targetId: string }>;
+          notice: string;
+        };
+        expect(homologs.map((h) => h.targetId)).toEqual(HUMAN_TARGETS);
+        expect(notice.startsWith(`${PAN_NOTICE} `)).toBe(true);
+        const lines = contentText(result).split('\n');
+        expect(lines).toContain('### ENSG00000141510');
+        expect(lines).toContain('**Last common ancestor:** Metazoa');
+        expect(lines).toContain(`> ${escapeMarkdownInline(notice)}`);
+        expect(homologyUrls()).toEqual([
+          `https://rest.ensembl.org${path}?type=orthologues&target_species=homo_sapiens`,
+          `https://rest.ensembl.org${path}?type=orthologues&target_species=homo_sapiens&compara=pan_homology`,
+        ]);
+        expect(membershipReads()).toBe(1);
+      },
+    );
+
+    it('composes the pan-taxonomic notice with the cap guidance', async () => {
+      const result = await runToolContract(ensemblGetHomology, {
+        id: FLY_GENE,
+        species: 'drosophila_melanogaster',
+        target_species: 'homo_sapiens',
+        max_results: 1,
+      });
+      expect(result.structuredContent).toMatchObject({ truncated: true, shown: 1, cap: 1 });
+      const { notice } = result.structuredContent as { notice: string };
+      expect(notice.startsWith(`${PAN_NOTICE} Showing 1 of 3 homologs. `)).toBe(true);
+      expect(contentText(result).split('\n')).toContain(`> ${escapeMarkdownInline(notice)}`);
+    });
+
+    it('answers an empty pan-taxonomic result as no homologs, not as an unknown gene', async () => {
+      const result = await runToolContract(ensemblGetHomology, {
+        id: FLY_GENE,
+        species: 'drosophila_melanogaster',
+        target_species: 'arabidopsis_thaliana',
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({
+        homologs: [],
+        totalCount: 0,
+        queryId: FLY_GENE,
+        notice:
+          "arabidopsis_thaliana is outside the homology comparison Ensembl runs for drosophila_melanogaster, so this answer comes from Ensembl's pan-taxonomic comparison (pan_homology), whose taxonomyLevel can name a broader clade than the two species' last common ancestor. " +
+          `No orthologues found for "${FLY_GENE}" in drosophila_melanogaster targeting arabidopsis_thaliana. Try type=all or remove the target_species filter.`,
+      });
+    });
+
+    it('fails target_not_compared with its recovery when a species is outside that comparison', async () => {
+      const result = await runToolContract(ensemblGetHomology, {
+        id: FLY_GENE,
+        species: 'drosophila_melanogaster',
+        target_species: 'rattus_norvegicus',
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: -32007,
+          data: {
+            reason: 'target_not_compared',
+            recovery: { hint: recovery('target_not_compared') },
+          },
+        },
+      });
+      const text = contentText(result);
+      expect(text).toContain(
+        "Error: rattus_norvegicus is outside the homology comparison Ensembl runs for drosophila_melanogaster, and Ensembl's pan-taxonomic comparison does not list rattus_norvegicus among its species, which it names in Ensembl's internal form (homo_sapiens).",
+      );
+      expect(text).toContain(`Recovery: ${recovery('target_not_compared')}`);
+      expect(text).toContain('(reason target_not_compared');
+      expect(homologyUrls()).toHaveLength(1);
+      expect(membershipReads()).toBe(1);
+    });
+
+    it('still maps an unknown target_species to invalid_species with one request', async () => {
+      http.reset();
+      rejectWith("Can not find internal name for species 'not_a_species'");
+      const result = await runToolContract(ensemblGetHomology, {
+        id: FLY_GENE,
+        species: 'drosophila_melanogaster',
+        target_species: 'not_a_species',
+      });
+      expect(result.structuredContent).toMatchObject({
+        error: { data: { reason: 'invalid_species' } },
+      });
+      expect(http.calls).toHaveLength(1);
+    });
+  });
+
+  it('describes percId and percPos over the target protein’s length (#54)', () => {
+    const row = ensemblGetHomology.output.shape.homologs.element.shape;
+    for (const field of [row.percId, row.percPos]) {
+      expect(field.description).toContain("target protein's length");
+      expect(field.description).not.toContain('between the query and target');
+    }
+    expect(row.percId.description).toContain(
+      "identical positions divided by the target protein's length",
+    );
+    expect(ensemblGetHomology.description).toContain("over the target protein's length");
   });
 
   it('classifies a long echoed rejection in linear time', async () => {

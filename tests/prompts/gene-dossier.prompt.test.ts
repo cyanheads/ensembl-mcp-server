@@ -104,6 +104,80 @@ describe('ensemblGeneDossierPrompt', () => {
     expect(step1).toContain('use that stable ID wherever a later step names the symbol');
   });
 
+  describe('steps 5-7 call shapes (issues #53, #54)', () => {
+    const generateText = async (species?: string) => {
+      const args = ensemblGeneDossierPrompt.args!.parse({ gene_symbol: 'TP53', species });
+      const messages = await ensemblGeneDossierPrompt.generate(args);
+      return (messages[0]!.content as { type: string; text: string }).text;
+    };
+    const step = (text: string, n: number) =>
+      text.slice(text.indexOf(`${n}. **`), text.indexOf(`${n + 1}. **`));
+
+    it.each([
+      ['homo_sapiens', '"mus_musculus", "rattus_norvegicus", "danio_rerio"'],
+      ['mus_musculus', '"homo_sapiens", "rattus_norvegicus", "danio_rerio"'],
+      ['rattus_norvegicus', '"mus_musculus", "homo_sapiens", "danio_rerio"'],
+      ['danio_rerio', '"mus_musculus", "rattus_norvegicus", "homo_sapiens"'],
+      ['drosophila_melanogaster', '"mus_musculus", "rattus_norvegicus", "danio_rerio"'],
+    ])('step 5 queries one target_species per model organism from %s', async (species, targets) => {
+      const step5 = step(await generateText(species), 5);
+      expect(step5).toContain(
+        `species="${species}", type="orthologues", and target_species set to each of ${targets} in turn.`,
+      );
+    });
+
+    it('step 5 reports every co-ortholog row instead of a top 3', async () => {
+      const step5 = step(await generateText(), 5);
+      expect(step5).not.toContain('top 3');
+      expect(step5).toContain(
+        'When type is ortholog_one2many or ortholog_many2many, the gene has several orthologs in that species: report every row for it',
+      );
+      expect(step5).toContain('repeat that call with max_results=0');
+    });
+
+    it('step 6 reads gene-level IDs from the gene and Swiss-Prot from the canonical transcript', async () => {
+      const step6 = step(await generateText(), 6);
+      const bullets = step6.split('\n').filter((line) => line.startsWith('   - '));
+      expect(bullets).toHaveLength(2);
+      const [geneCall, transcriptCall] = bullets as [string, string];
+
+      expect(geneCall).toContain(
+        'The stable gene ID from step 1, with no dbname and all_levels left false.',
+      );
+      expect(geneCall).not.toContain('all_levels=true');
+      for (const db of ['dbname=HGNC', 'dbname=EntrezGene', 'dbname=MIM_GENE']) {
+        expect(geneCall).toContain(db);
+      }
+
+      expect(transcriptCall).toContain(
+        'The canonical transcript ID from step 1, with all_levels=true and dbname="Uniprot/SWISSPROT".',
+      );
+      expect(transcriptCall).toContain('An empty result means no reviewed UniProt entry is linked');
+
+      // The gene-name tag lists unreviewed accessions; RefSeq rides step 1, GO is not requested.
+      expect(step6).not.toContain('Uniprot_gn');
+      expect(step6).toContain("RefSeq transcript from step 1's maneSelect");
+      expect(step6).not.toContain('RefSeq_');
+      expect(step6).not.toMatch(/\bGO\b/);
+    });
+
+    it('step 7 chains each ID to a source that serves it', async () => {
+      const text = await generateText();
+      const step7 = text.slice(text.indexOf('7. **'));
+      expect(step7).toContain(
+        'UniProt accession → UniProt for function and PubChem for bioassays; gene symbol → PubMed search for literature; MIM_GENE → OMIM for disease\n',
+      );
+      expect(step7).not.toContain('pubchem for structure');
+    });
+
+    it('the description promises no literature follow-up from xref IDs', () => {
+      expect(ensemblGeneDossierPrompt.description).not.toContain('literature');
+      expect(ensemblGeneDossierPrompt.description).toContain(
+        'model-organism orthologs → external database IDs for protein and disease follow-up.',
+      );
+    });
+  });
+
   it('message role is "user"', async () => {
     const args = ensemblGeneDossierPrompt.args!.parse({ gene_symbol: 'BRCA2' });
     const messages = await ensemblGeneDossierPrompt.generate(args);

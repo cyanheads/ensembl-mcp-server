@@ -192,6 +192,8 @@ export type RawXrefEntry = {
   display_id?: string;
   description?: string;
   info_type?: string;
+  info_text?: string;
+  linkage_types?: string[];
   synonyms?: string[];
   version?: string;
 };
@@ -386,6 +388,16 @@ export type HomologyEntry = {
 export type HomologyResult = {
   homologs: HomologyEntry[];
   resolvedQueryId?: string;
+  /**
+   * Set when the homologs come from Ensembl's pan-taxonomic comparison rather than the
+   * comparison Ensembl runs for the source species, which did not hold the target.
+   */
+  comparison?: 'pan_homology';
+};
+
+/** One entry of `/info/compara/species_sets/{method}`: the species a comparison holds. */
+export type RawSpeciesSet = {
+  species_set?: string[];
 };
 
 export type XrefEntry = {
@@ -394,6 +406,9 @@ export type XrefEntry = {
   primaryId?: string;
   displayId?: string;
   description?: string;
+  infoType?: string;
+  infoText?: string;
+  linkageTypes?: string[];
 };
 
 export type SpeciesInfo = {

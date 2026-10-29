@@ -1193,6 +1193,403 @@ describe('EnsemblService', () => {
     });
   });
 
+  describe('cross-division homology (issue #55)', () => {
+    const FLY_GENE = 'FBgn0039044';
+    const HUMAN_TARGETS = ['ENSG00000078900', 'ENSG00000141510', 'ENSG00000073282'];
+    const PAN_SET_URL =
+      'https://rest.ensembl.org/info/compara/species_sets/PROTEIN_TREES?compara=pan_homology';
+    const ID_URL = `https://rest.ensembl.org/homology/id/drosophila_melanogaster/${FLY_GENE}`;
+    const SYMBOL_URL = 'https://rest.ensembl.org/homology/symbol/drosophila_melanogaster/p53';
+    /** What the pan-taxonomic comparison answers for the fly gene, as rest.ensembl.org does. */
+    const flyRows = {
+      data: [
+        {
+          id: FLY_GENE,
+          homologies: HUMAN_TARGETS.map((id) => ({
+            type: 'ortholog_one2many',
+            taxonomy_level: 'Metazoa',
+            target: { id, species: 'homo_sapiens', perc_id: 14.7583, perc_pos: 29.2621 },
+          })),
+        },
+      ],
+    };
+    const panSet = (
+      members = [
+        'drosophila_melanogaster',
+        'homo_sapiens',
+        'plasmodium_falciparum',
+        'arabidopsis_thaliana',
+      ],
+    ) => [
+      { species_set_group: 'collection-default', method: 'PROTEIN_TREES', species_set: members },
+    ];
+
+    /**
+     * Mirrors rest.ensembl.org: a source's own comparison answers a target outside it with a
+     * GenomeDB miss, the pan-taxonomic comparison answers `panRows`, and the species-set
+     * endpoint answers through `members`.
+     */
+    function routeCompara(
+      members: (signal: AbortSignal) => Promise<Response> | Response = () => jsonResponse(panSet()),
+      panRows: unknown = flyRows,
+    ) {
+      mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+        const { origin, pathname, searchParams } = new URL(url);
+        if (origin !== 'https://rest.ensembl.org') throw new Error(`Unmocked fetch: ${url}`);
+        if (pathname === '/info/compara/species_sets/PROTEIN_TREES') return members(init!.signal!);
+        if (pathname.startsWith('/homology/')) {
+          if (searchParams.get('compara') === 'pan_homology') return jsonResponse(panRows);
+          const target = searchParams.get('target_species');
+          return jsonResponse({ error: `Could not find a GenomeDB named '${target}'` }, 400);
+        }
+        throw new Error(`Unmocked fetch: ${url}`);
+      });
+    }
+
+    const urls = () => mockFetch.mock.calls.map((c) => c[0] as string);
+    const membershipReads = () => urls().filter((url) => url === PAN_SET_URL).length;
+    const byId = (
+      target: string | undefined,
+      species = 'drosophila_melanogaster',
+      ctx = createMockContext(),
+    ) => getEnsemblService().getHomologyById(FLY_GENE, species, 'orthologues', target, ctx);
+
+    it.each([
+      ['getHomologyById', () => byId('homo_sapiens'), ID_URL],
+      [
+        'getHomologyBySymbol',
+        () =>
+          getEnsemblService().getHomologyBySymbol(
+            'p53',
+            'drosophila_melanogaster',
+            'orthologues',
+            'homo_sapiens',
+            createMockContext(),
+          ),
+        SYMBOL_URL,
+      ],
+    ] as const)(
+      '%s repeats a GenomeDB miss on the pan-taxonomic comparison when both species are in it',
+      async (_method, call, base) => {
+        routeCompara();
+        const result = await call();
+        expect(result.comparison).toBe('pan_homology');
+        expect(result.resolvedQueryId).toBe(FLY_GENE);
+        expect(result.homologs.map((h) => h.targetId)).toEqual(HUMAN_TARGETS);
+        expect(result.homologs[1]).toEqual({
+          targetId: 'ENSG00000141510',
+          targetSpecies: 'homo_sapiens',
+          type: 'ortholog_one2many',
+          percId: 14.7583,
+          percPos: 29.2621,
+          taxonomyLevel: 'Metazoa',
+        });
+        expect(urls()).toEqual([
+          `${base}?type=orthologues&target_species=homo_sapiens`,
+          PAN_SET_URL,
+          `${base}?type=orthologues&target_species=homo_sapiens&compara=pan_homology`,
+        ]);
+      },
+    );
+
+    it('answers no homologs when the pan-taxonomic comparison has no tree for the gene', async () => {
+      routeCompara(undefined, { data: [] });
+      const result = await byId('arabidopsis_thaliana');
+      expect(result).toEqual({ homologs: [], comparison: 'pan_homology' });
+      expect(urls().at(-1)).toBe(
+        `${ID_URL}?type=orthologues&target_species=arabidopsis_thaliana&compara=pan_homology`,
+      );
+    });
+
+    it('checks membership without regard to case and sends the target as given', async () => {
+      routeCompara();
+      const result = await byId('Homo_Sapiens');
+      expect(result.comparison).toBe('pan_homology');
+      expect(urls().at(-1)).toBe(
+        `${ID_URL}?type=orthologues&target_species=Homo_Sapiens&compara=pan_homology`,
+      );
+    });
+
+    it.each([
+      [
+        'target',
+        'rattus_norvegicus',
+        'drosophila_melanogaster',
+        "rattus_norvegicus is outside the homology comparison Ensembl runs for drosophila_melanogaster, and Ensembl's pan-taxonomic comparison does not list rattus_norvegicus among its species, which it names in Ensembl's internal form (homo_sapiens).",
+      ],
+      [
+        'source',
+        'homo_sapiens',
+        'caenorhabditis_briggsae',
+        "homo_sapiens is outside the homology comparison Ensembl runs for caenorhabditis_briggsae, and Ensembl's pan-taxonomic comparison does not list caenorhabditis_briggsae among its species, which it names in Ensembl's internal form (homo_sapiens). To reach homo_sapiens, omit target_species to find this gene's ortholog in a species that comparison holds (caenorhabditis_elegans for a Caenorhabditis gene), then query from that ortholog.",
+      ],
+    ])(
+      'fails target_not_compared with no pan request when the %s is outside the pan-taxonomic comparison',
+      async (_side, target, species, message) => {
+        routeCompara();
+        const error = await byId(target, species).catch((err: unknown) => err);
+        expect(error).toBeInstanceOf(McpError);
+        expect(error).toMatchObject({ code: -32007, data: { reason: 'target_not_compared' } });
+        expect((error as McpError).message).toBe(message);
+        expect(urls()).toEqual([
+          `https://rest.ensembl.org/homology/id/${species}/${FLY_GENE}?type=orthologues&target_species=${target}`,
+          PAN_SET_URL,
+        ]);
+      },
+    );
+
+    it('reads the membership once for the process', async () => {
+      routeCompara();
+      await byId('homo_sapiens');
+      await expect(byId('rattus_norvegicus')).rejects.toMatchObject({
+        data: { reason: 'target_not_compared' },
+      });
+      await byId('arabidopsis_thaliana');
+      expect(membershipReads()).toBe(1);
+      expect(urls()).toHaveLength(6);
+    });
+
+    it.each([
+      ['an error envelope', () => jsonResponse({ error: 'Something went wrong upstream' }, 400)],
+      ['a set listing no species', () => jsonResponse(panSet([]))],
+    ])(
+      'degrades a failed membership read (%s) to target_not_compared and keeps nothing',
+      async (_label, failure) => {
+        let reads = 0;
+        routeCompara(() => (++reads === 1 ? failure() : jsonResponse(panSet())));
+        const error = await byId('homo_sapiens').catch((err: unknown) => err);
+        expect(error).toMatchObject({ code: -32007, data: { reason: 'target_not_compared' } });
+        expect((error as McpError).message).toBe(
+          "homo_sapiens is outside the homology comparison Ensembl runs for drosophila_melanogaster, and the species list of Ensembl's pan-taxonomic comparison could not be read, so the pair was not tried there; retrying later may answer it.",
+        );
+        expect(await byId('homo_sapiens')).toMatchObject({ comparison: 'pan_homology' });
+        expect(membershipReads()).toBe(2);
+      },
+    );
+
+    it('sends one request for an answer, an unknown species, or no target_species', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(flyRows))
+        .mockResolvedValueOnce(
+          jsonResponse({ error: "Can not find internal name for species 'not_a_species'" }, 400),
+        )
+        .mockResolvedValueOnce(jsonResponse(flyRows));
+      expect(await byId('caenorhabditis_elegans')).not.toHaveProperty('comparison');
+      await expect(byId('not_a_species')).rejects.toThrow(
+        "Can not find internal name for species 'not_a_species'",
+      );
+      expect(await byId(undefined)).not.toHaveProperty('comparison');
+      expect(urls()).toEqual([
+        `${ID_URL}?type=orthologues&target_species=caenorhabditis_elegans`,
+        `${ID_URL}?type=orthologues&target_species=not_a_species`,
+        `${ID_URL}?type=orthologues`,
+      ]);
+    });
+
+    describe('one membership read shared by concurrent calls', () => {
+      /** Species-set requests, by their signals; each answers after `ms` unless aborted first. */
+      const reads: AbortSignal[] = [];
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+        reads.length = 0;
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      const membersAfter = (ms: number) => (signal: AbortSignal) => {
+        reads.push(signal);
+        return new Promise<Response>((resolve, reject) => {
+          const timer = setTimeout(() => resolve(jsonResponse(panSet())), ms);
+          signal.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        });
+      };
+      const stop = () => new DOMException('Caller stopped', 'AbortError');
+
+      it('answers every waiting call, and one caller cancelling fails only that call', async () => {
+        routeCompara(membersAfter(1_000));
+        const caller = new AbortController();
+        const cancelled = track(
+          byId('homo_sapiens', undefined, createMockContext({ signal: caller.signal })),
+        );
+        const waiting = track(byId('arabidopsis_thaliana'));
+        await vi.advanceTimersByTimeAsync(500);
+        caller.abort(stop());
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cancelled.state.settledAt).toBe(500);
+        expect(cancelled.state.error).toMatchObject({
+          name: 'AbortError',
+          message: 'Caller stopped',
+        });
+        expect(reads[0]?.aborted).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(500);
+        await Promise.all([cancelled.done, waiting.done]);
+        expect(waiting.state.settledAt).toBe(1_000);
+        expect(waiting.state.value).toMatchObject({ comparison: 'pan_homology' });
+        expect(reads).toHaveLength(1);
+        expect(vi.getTimerCount()).toBe(0);
+      });
+
+      it('stops the read when its last caller cancels, and the next call reads again', async () => {
+        routeCompara(membersAfter(1_000));
+        const caller = new AbortController();
+        const cancelled = track(
+          byId('homo_sapiens', undefined, createMockContext({ signal: caller.signal })),
+        );
+        await vi.advanceTimersByTimeAsync(500);
+        caller.abort(stop());
+        await vi.advanceTimersByTimeAsync(0);
+        await cancelled.done;
+        expect(cancelled.state.error).toMatchObject({ name: 'AbortError' });
+        expect(reads[0]?.aborted).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
+
+        const next = track(byId('homo_sapiens'));
+        await vi.advanceTimersByTimeAsync(1_000);
+        await next.done;
+        expect(next.state.value).toMatchObject({ comparison: 'pan_homology' });
+        expect(reads).toHaveLength(2);
+      });
+
+      it('bounds the wait by the call deadline and degrades to target_not_compared', async () => {
+        // The source's comparison takes 170 s to answer its miss; the membership read stalls.
+        mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+          const { pathname } = new URL(url);
+          if (pathname === '/info/compara/species_sets/PROTEIN_TREES') {
+            reads.push(init!.signal!);
+            return onAbort(init!.signal!);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 170_000));
+          return jsonResponse({ error: "Could not find a GenomeDB named 'homo_sapiens'" }, 400);
+        });
+        const call = track(byId('homo_sapiens'));
+        await vi.advanceTimersByTimeAsync(ENSEMBL_CALL_DEADLINE_MS - 1);
+        expect(call.state.settledAt).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(1);
+        await call.done;
+        expect(call.state.settledAt).toBe(ENSEMBL_CALL_DEADLINE_MS);
+        expect(call.state.error).toMatchObject({
+          code: -32007,
+          data: { reason: 'target_not_compared' },
+        });
+        expect(reads).toHaveLength(1);
+        expect(reads[0]?.aborted).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
+      });
+
+      it('reports a call cancelled during the read as RequestCancelled', async () => {
+        routeCompara(membersAfter(1_000));
+        const caller = new AbortController();
+        const result = track(
+          runToolContract(
+            ensemblGetHomology,
+            { id: FLY_GENE, species: 'drosophila_melanogaster', target_species: 'homo_sapiens' },
+            { context: { signal: caller.signal } },
+          ),
+        );
+        await vi.advanceTimersByTimeAsync(500);
+        caller.abort(stop());
+        await vi.advanceTimersByTimeAsync(0);
+        await result.done;
+        expect(errorOf(result.state.value!).code).toBe(-32011);
+        expect(reads[0]?.aborted).toBe(true);
+        expect(urls()).toEqual([
+          `${ID_URL}?type=orthologues&target_species=homo_sapiens`,
+          PAN_SET_URL,
+        ]);
+      });
+    });
+  });
+
+  describe('canonical transcript without a version (issue #56)', () => {
+    /** Ensembl builds canonical_transcript as `<id>.<version>`, leaving the version empty when there is none. */
+    it.each([
+      ['FBtr0084360.', 'FBtr0084360'],
+      ['AT2G18790.1.', 'AT2G18790.1'],
+      ['YFL039C_mRNA.', 'YFL039C_mRNA'],
+      ['ENST00000269305.9', 'ENST00000269305.9'],
+      ['ENST00000269305', 'ENST00000269305'],
+      ['X..', 'X.'],
+    ])('maps canonical_transcript %j to %j', async (canonical_transcript, expected) => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'G', canonical_transcript }));
+      const gene = await getEnsemblService().lookupGeneById('G', false, createMockContext());
+      expect(gene.canonicalTranscript).toBe(expected);
+    });
+  });
+
+  describe('xref provenance (issue #59)', () => {
+    const go = {
+      dbname: 'GO',
+      db_display_name: 'GO',
+      primary_id: 'GO:0000978',
+      display_id: 'GO:0000978',
+      description: 'RNA polymerase II cis-regulatory region sequence-specific DNA binding',
+      synonyms: [],
+      version: '0',
+    };
+    const base = {
+      dbname: 'GO',
+      dbDisplayName: 'GO',
+      primaryId: 'GO:0000978',
+      displayId: 'GO:0000978',
+      description: go.description,
+    };
+
+    it.each([
+      [
+        'a projection',
+        {
+          ...go,
+          db_display_name: 'Projected GO',
+          info_type: 'PROJECTION',
+          info_text: 'from mus_musculus translation ENSMUSP00000104298',
+          linkage_types: ['IEA'],
+        },
+        {
+          ...base,
+          dbDisplayName: 'Projected GO',
+          infoType: 'PROJECTION',
+          infoText: 'from mus_musculus translation ENSMUSP00000104298',
+          linkageTypes: ['IEA'],
+        },
+      ],
+      [
+        'several evidence codes',
+        { ...go, info_type: 'DIRECT', info_text: 'UniProt', linkage_types: ['IEA', 'IDA', 'IMP'] },
+        { ...base, infoType: 'DIRECT', infoText: 'UniProt', linkageTypes: ['IEA', 'IDA', 'IMP'] },
+      ],
+      [
+        'a blank info_text and no linkage_types',
+        { ...go, info_type: 'DEPENDENT', info_text: '' },
+        { ...base, infoType: 'DEPENDENT' },
+      ],
+      [
+        'an empty linkage_types',
+        { ...go, info_type: 'DIRECT', linkage_types: [] },
+        { ...base, infoType: 'DIRECT' },
+      ],
+      ['none of the three', go, base],
+    ])('carries %s', async (_case, raw, expected) => {
+      mockFetch.mockResolvedValueOnce(jsonResponse([raw]));
+      const xrefs = await getEnsemblService().getXrefsById(
+        'ENST00000269305',
+        'GO',
+        createMockContext(),
+      );
+      expect(xrefs).toEqual([expected]);
+    });
+  });
+
   describe('mitochondrion alias check (issue #39)', () => {
     /** What /info/assembly/{species}/{name}?synonyms=1 answers, mirroring rest.ensembl.org. */
     const RESOLVED: Record<string, { status?: number; body: unknown }> = {

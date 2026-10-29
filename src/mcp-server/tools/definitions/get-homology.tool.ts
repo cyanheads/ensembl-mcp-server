@@ -8,7 +8,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { renderHeading } from '@/mcp-server/tools/render-heading.js';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
-import type { HomologyEntry } from '@/services/ensembl/types.js';
+import type { HomologyEntry, HomologyResult } from '@/services/ensembl/types.js';
 
 const HOMOLOGY_TYPES = ['orthologues', 'paralogues', 'all'] as const;
 
@@ -40,15 +40,13 @@ const HomologyEntrySchema = z.object({
     .number()
     .optional()
     .describe(
-      'Percent identity between the query and target gene sequences (0-100). ' +
-        'Higher values indicate more conserved sequences.',
+      "Percent identity over the target protein's length (0-100): identical positions divided by the target protein's length. The query-side value differs when the two proteins differ in length.",
     ),
   percPos: z
     .number()
     .optional()
     .describe(
-      'Percent positive (similar) positions in the alignment (0-100). ' +
-        'Includes conservative substitutions as well as identical residues.',
+      "Percent positive positions over the target protein's length (0-100): identical residues plus conservative substitutions, divided by the target protein's length.",
     ),
   taxonomyLevel: z
     .string()
@@ -61,15 +59,7 @@ const HomologyEntrySchema = z.object({
 
 export const ensemblGetHomology = tool('ensembl_get_homology', {
   title: 'Get Gene Homologs',
-  description:
-    "Find orthologs and/or paralogs of a gene across species. Returns each homolog's stable ID, species, " +
-    'homology type (ortholog_one2one, ortholog_one2many, paralog_many2many, etc.), percId (percent identity), ' +
-    'percPos (percent positives), and taxonomy level. Essential for cross-species research — for example, ' +
-    '"what is the mouse equivalent of human TP53?" or "how conserved is BRCA2 across mammals?". ' +
-    'Provide either symbol + species or a stable gene ID. Target species can be filtered to a single species ' +
-    'or left open to return all available homologs. Includes targetProteinId when available for ' +
-    'ensembl_get_sequence with type="protein". targetSymbol is best-effort: a secondary gene lookup ' +
-    'shares five seconds across the returned rows and the remaining call deadline; missing names never remove homologs.',
+  description: `Find orthologs and/or paralogs of a gene across species. Returns each homolog's stable ID, species, homology type (ortholog_one2one, ortholog_one2many, paralog_many2many, etc.), percId and percPos (percent identical and positive positions, over the target protein's length), and taxonomy level. Essential for cross-species research — for example, "what is the mouse equivalent of human TP53?" or "how conserved is BRCA2 across mammals?". Provide either symbol + species or a stable gene ID. Target species can be filtered to a single species or left open to return all available homologs. A target_species outside the comparison Ensembl runs for the source species is answered from Ensembl's pan-taxonomic comparison when that comparison holds both species. Includes targetProteinId when available for ensembl_get_sequence with type="protein". targetSymbol is best-effort: a secondary gene lookup shares five seconds across the returned rows and the remaining call deadline; missing names never remove homologs.`,
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     symbol: z
@@ -154,7 +144,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       .string()
       .optional()
       .describe(
-        'Guidance when no homologs are found, the list was capped, or symbol enrichment is incomplete.',
+        "Guidance when the homologs come from Ensembl's pan-taxonomic comparison, no homologs are found, the list was capped, or symbol enrichment is incomplete.",
       ),
     truncated: z
       .boolean()
@@ -185,6 +175,14 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
         'Find the internal names for species and target_species with ensembl_list_species, setting ' +
         'nameContains to a genus or common name (e.g. mouse) and division for non-vertebrates. ' +
         'Names are lowercase_underscore (mus_musculus, not Mouse).',
+    },
+    {
+      reason: 'target_not_compared',
+      code: JsonRpcErrorCode.ValidationError,
+      when: "Both species are valid, but target_species is outside the comparison Ensembl runs for the source species, and Ensembl's pan-taxonomic comparison does not hold both species or its species list could not be read.",
+      recovery:
+        "Omit target_species with max_results=0 to list every species this gene's homologs reach, then query from its ortholog in a species the comparison holds. Or query the other way, from a target_species gene (resolve it with ensembl_lookup_gene) with target_species set to the source species; Ensembl answers that when the target's own comparison includes the source. When the message says the species list could not be read, repeat the call.",
+      thrownBy: 'service',
     },
     {
       reason: 'no_input',
@@ -225,6 +223,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     const symbolTrimmed = input.symbol?.trim();
     let queryId: string;
     let homologs: HomologyEntry[];
+    let comparison: HomologyResult['comparison'];
 
     /** Ensembl quotes the one name it rejected, source or target species. */
     const failOnUnknownSpecies = (msg: string) => {
@@ -248,7 +247,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
           }
           throw err;
         });
-      homologs = result.homologs;
+      ({ homologs, comparison } = result);
       // The unversioned stable ID Ensembl answered for; the submitted ID only if it named none.
       queryId = result.resolvedQueryId ?? idTrimmed;
     } else {
@@ -267,7 +266,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
           }
           throw err;
         });
-      homologs = result.homologs;
+      ({ homologs, comparison } = result);
       // Surface the resolved Ensembl stable gene ID rather than echoing the symbol (#6);
       // fall back to the submitted symbol only when the response carried no data entry.
       queryId = result.resolvedQueryId ?? submittedSymbol;
@@ -289,11 +288,16 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     const missingNames = enriched.filter((h) => !h.targetSymbol).length;
     const fragments: string[] = [];
 
+    if (comparison === 'pan_homology') {
+      fragments.push(
+        `${input.target_species} is outside the homology comparison Ensembl runs for ${input.species}, so this answer comes from Ensembl's pan-taxonomic comparison (pan_homology), whose taxonomyLevel can name a broader clade than the two species' last common ancestor.`,
+      );
+    }
     if (returned.length === 0) {
       fragments.push(
-        `No ${input.type} found for "${queryId}" in ${input.species}` +
-          (input.target_species ? ` targeting ${input.target_species}` : '') +
-          '. Try type=all or remove the target_species filter.',
+        input.target_species
+          ? `No ${input.type} found for "${queryId}" in ${input.species} targeting ${input.target_species}. Try type=all or remove the target_species filter.`
+          : `No ${input.type} found for "${queryId}" in ${input.species}. Try type=all.`,
       );
     } else if (returned.length < availableCount) {
       fragments.push(

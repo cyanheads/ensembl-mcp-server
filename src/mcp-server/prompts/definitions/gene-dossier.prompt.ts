@@ -5,11 +5,15 @@
 
 import { prompt, z } from '@cyanheads/mcp-ts-core';
 
+const MODEL_ORGANISMS = ['mus_musculus', 'rattus_norvegicus', 'danio_rerio'] as const;
+
+/** Step 5's quoted target species: the model organisms, with homo_sapiens in place of the source species. */
+const orthologTargets = (species: string) =>
+  MODEL_ORGANISMS.map((s) => `"${s === species ? 'homo_sapiens' : s}"`).join(', ');
+
 export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
   description:
-    'Structured research workflow for assembling a complete gene profile. Guides the agent through ' +
-    'the Ensembl tool chain in order: symbol → ID + location → protein sequence → key variants → ' +
-    'cross-species orthologs → xref IDs for protein and literature follow-up.',
+    'Structured research workflow for assembling a complete gene profile. Guides the agent through the Ensembl tool chain in order: symbol → ID + location → protein sequence → key variants → model-organism orthologs → external database IDs for protein and disease follow-up.',
   args: z.object({
     gene_symbol: z
       .string()
@@ -63,22 +67,37 @@ export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
           `Record mostSevereConsequence, impact, variantAllele, canonical, and maneSelect when present. ` +
           `Clinical significance is aggregate for a colocated record; use clinicalSignificanceByAllele ` +
           `for explicit allele attribution, never infer it for the submitted allele.\n\n` +
-          `5. **Find cross-species orthologs** — call \`ensembl_get_homology\` with ` +
-          `symbol="${args.gene_symbol}", species="${args.species}", and type="orthologues". ` +
-          `Focus on model-organism orthologs (mouse, rat, zebrafish). Record percId, targetSymbol, ` +
-          `and targetProteinId when present for the top 3. Missing targetSymbol does not imply no homolog.\n\n` +
-          `6. **Get external database IDs** — call \`ensembl_get_xrefs\` with the stable gene ID ` +
-          `from step 1, all_levels=true, and no dbname filter to include transcript and translation references. Record: ` +
-          `HGNC ID (dbname=HGNC), UniProt accession (dbname=Uniprot_gn), ` +
-          `NCBI Gene ID (dbname=EntrezGene), and OMIM ID (dbname=MIM_GENE) if present.\n\n` +
+          `5. **Find model-organism orthologs** — call \`ensembl_get_homology\` three times, with ` +
+          `symbol="${args.gene_symbol}", species="${args.species}", type="orthologues", and ` +
+          `target_species set to each of ${orthologTargets(args.species)} in turn. Without target_species the ` +
+          `tool returns one capped page in Ensembl's order, which can leave out all three. For every ` +
+          `returned row, record type, targetId, targetSymbol and targetProteinId when present, and ` +
+          `percId; if totalCount exceeds the rows shown, repeat that call with max_results=0. ` +
+          `When type is ortholog_one2many or ortholog_many2many, the gene has several orthologs in ` +
+          `that species: report every row for it, ranked by percId, instead of naming one. Missing ` +
+          `targetSymbol does not imply no homolog. A call that returns no rows means Ensembl records ` +
+          `no ortholog in that species; record a failed call with its error reason, not as a ` +
+          `missing ortholog.\n\n` +
+          `6. **Get external database IDs** — call \`ensembl_get_xrefs\` twice:\n` +
+          `   - The stable gene ID from step 1, with no dbname and all_levels left false. Record the ` +
+          `HGNC ID (dbname=HGNC; a non-human gene carries its own nomenclature ID instead, such as ` +
+          `MGI for mouse), NCBI Gene ID (dbname=EntrezGene), and OMIM gene ID (dbname=MIM_GENE) when present.\n` +
+          `   - The canonical transcript ID from step 1, with all_levels=true and ` +
+          `dbname="Uniprot/SWISSPROT". Record its primaryId as the reviewed UniProt accession. ` +
+          `An empty result means no reviewed UniProt entry is linked: record that, and don't ` +
+          `substitute an unreviewed accession.\n` +
+          `   Take the RefSeq transcript from step 1's maneSelect when present; it needs no call. ` +
+          `Never pass the gene ID with all_levels=true: that returns every transcript's references, ` +
+          `thousands of rows for a well-studied gene.\n\n` +
           `7. **Synthesize the dossier** — compile your findings into a structured report with sections:\n` +
           `   - Gene overview (ID, location, biotype, description)\n` +
           `   - Protein sequence summary (length, first 50 aa, key domains if known)\n` +
           `   - Variant landscape (count from step 3's totalCount, highest-impact findings, ` +
           `clinical significance)\n` +
-          `   - Conservation across species (ortholog table with percId)\n` +
-          `   - External IDs for follow-up (UniProt → pubchem for structure, ` +
-          `HGNC/EntrezGene → pubmed for literature, OMIM for disease associations)\n\n` +
+          `   - Conservation across species (every ortholog row from step 5 with its type and percId)\n` +
+          `   - External IDs for follow-up (the IDs from steps 1 and 6) and where each leads: ` +
+          `UniProt accession → UniProt for function and PubChem for bioassays; gene symbol → PubMed ` +
+          `search for literature; MIM_GENE → OMIM for disease\n\n` +
           `Use the stable IDs and coordinates from each step as inputs to the next — ` +
           `the Ensembl tool chain is designed to chain this way.`,
       },

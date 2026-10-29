@@ -32,6 +32,7 @@ import type {
   RawRegionInfo,
   RawSequenceRecord,
   RawSpeciesResponse,
+  RawSpeciesSet,
   RawTranscriptRecord,
   RawVepRecord,
   RawXrefEntry,
@@ -72,6 +73,49 @@ const PERL_DIE_LOCATION = / at \/\S+ line \d+/;
 
 /** Ensembl's answer for a sequence-region name a species does not resolve. */
 const NO_SLICE = /^No slice found for location/i;
+
+/**
+ * How Ensembl's homology endpoints open their answer when `target_species` names no genome
+ * in the comparison Ensembl runs for the source species. Matched as a prefix of the whole
+ * message: Ensembl's wording, never this service's.
+ */
+const GENOMEDB_MISS = "Could not find a GenomeDB named '";
+
+/** The species Ensembl's pan-taxonomic comparison holds, across every division. */
+const PAN_HOMOLOGY_SPECIES_PATH = '/info/compara/species_sets/PROTEIN_TREES?compara=pan_homology';
+
+/**
+ * Waits on a load other calls may share, for one call: the load's answer, or a rejection
+ * once this call is cancelled or `remainingMs` passes. Leaving early stops nothing; the
+ * load's owner decides that.
+ */
+function awaitShared<T>(load: Promise<T>, signal: AbortSignal, remainingMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const settle = (finish: () => void) => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      finish();
+    };
+    const onAbort = () => settle(() => reject(signal.reason));
+    const timer = setTimeout(
+      () =>
+        settle(() =>
+          reject(
+            timeout(`Ensembl request exceeded its ${ENSEMBL_CALL_DEADLINE_MS}ms call deadline.`, {
+              deadlineMs: ENSEMBL_CALL_DEADLINE_MS,
+            }),
+          ),
+        ),
+      Math.max(0, remainingMs),
+    );
+    load.then(
+      (value) => settle(() => resolve(value)),
+      (err: unknown) => settle(() => reject(err)),
+    );
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 // --- Names ---
 
@@ -175,9 +219,14 @@ function parseEnsemblBody<T>(status: number, text: string): T {
 
 function normalizeGene(raw: RawGeneRecord): GeneRecord {
   const desc = raw.description?.split('[')[0]?.trim();
+  // Ensembl builds canonical_transcript as `<id>.<version>` and leaves the version empty for
+  // transcripts without one (`FBtr0084360.`, `AT2G18790.1.`); drop that dot so the ID chains.
+  const canonical = raw.canonical_transcript?.endsWith('.')
+    ? raw.canonical_transcript.slice(0, -1)
+    : raw.canonical_transcript;
   return {
     id: raw.id,
-    ...(raw.canonical_transcript && { canonicalTranscript: raw.canonical_transcript }),
+    ...(canonical && { canonicalTranscript: canonical }),
     ...(raw.object_type === 'Transcript' && raw.Parent && { parentGeneId: raw.Parent }),
     ...(raw.species && { species: raw.species }),
     ...(raw.display_name && { displayName: raw.display_name }),
@@ -350,6 +399,9 @@ function normalizeXref(raw: RawXrefEntry): XrefEntry {
     ...(raw.primary_id && { primaryId: raw.primary_id }),
     ...(raw.display_id && { displayId: raw.display_id }),
     ...(raw.description && { description: raw.description }),
+    ...(raw.info_type && { infoType: raw.info_type }),
+    ...(raw.info_text && { infoText: raw.info_text }),
+    ...(raw.linkage_types?.length ? { linkageTypes: raw.linkage_types } : {}),
   };
 }
 
@@ -372,6 +424,13 @@ const XREF_CONCURRENCY = 4;
 interface RequestOptions {
   body?: unknown;
   method?: 'GET' | 'POST';
+}
+
+/** A species read shared by concurrent calls; `stop` aborts it once no call waits on it. */
+interface PanHomologyLoad {
+  species: Promise<ReadonlySet<string>>;
+  stop: AbortController;
+  waiters: number;
 }
 
 export class EnsemblService {
@@ -399,6 +458,13 @@ export class EnsemblService {
    * {@link ENSEMBL_CALL_DEADLINE_MS} budget.
    */
   private readonly callStarts = new WeakMap<Context, number>();
+  /**
+   * The species in Ensembl's pan-taxonomic comparison, lowercased, kept for the process
+   * lifetime on the same grounds as defaultAssemblies once a read succeeds.
+   */
+  private panHomologySpecies: ReadonlySet<string> | undefined;
+  /** The pan-taxonomic species read in flight, shared by every call waiting on it. */
+  private panHomologyLoad: PanHomologyLoad | undefined;
 
   constructor(_config: AppConfig, _storage: StorageService) {
     this.baseUrl = getServerConfig().baseUrl;
@@ -945,6 +1011,118 @@ export class EnsemblService {
     return names;
   }
 
+  /**
+   * The species in Ensembl's pan-taxonomic comparison, read once per process. Concurrent
+   * calls share one read and each waits only within its own cancellation and call deadline;
+   * the read is aborted once no call waits on it. A failed or empty read is never kept.
+   */
+  async getPanHomologySpecies(ctx: Context): Promise<ReadonlySet<string>> {
+    if (this.panHomologySpecies) return this.panHomologySpecies;
+    this.panHomologyLoad ??= this.readPanHomologySpecies(ctx);
+    const load = this.panHomologyLoad;
+    load.waiters++;
+    const callStart = this.callStarts.get(ctx) ?? Date.now();
+    this.callStarts.set(ctx, callStart);
+    try {
+      return await awaitShared(
+        load.species,
+        ctx.signal,
+        callStart + ENSEMBL_CALL_DEADLINE_MS - Date.now(),
+      );
+    } finally {
+      if (--load.waiters === 0) {
+        if (this.panHomologyLoad === load) this.panHomologyLoad = undefined;
+        load.stop.abort();
+      }
+    }
+  }
+
+  private readPanHomologySpecies(ctx: Context): PanHomologyLoad {
+    const stop = new AbortController();
+    const species = withRetry(
+      (attempt) =>
+        this.fetchJson<RawSpeciesSet[]>(PAN_HOMOLOGY_SPECIES_PATH, ctx, undefined, attempt),
+      {
+        operation: 'Ensembl pan-taxonomic species read',
+        baseDelayMs: 1000,
+        signal: stop.signal,
+        deadlineMs: ENSEMBL_CALL_DEADLINE_MS,
+      },
+    )
+      .then((raw) => {
+        const members = new Set<string>();
+        for (const set of Array.isArray(raw) ? raw : []) {
+          for (const name of set?.species_set ?? []) {
+            if (typeof name === 'string') members.add(name.toLowerCase());
+          }
+        }
+        if (members.size === 0) {
+          throw serviceUnavailable("Ensembl's pan-taxonomic species set listed no species.");
+        }
+        this.panHomologySpecies = members;
+        return members;
+      })
+      .finally(() => {
+        if (this.panHomologyLoad === load) this.panHomologyLoad = undefined;
+      });
+    const load: PanHomologyLoad = { species, stop, waiters: 0 };
+    return load;
+  }
+
+  /**
+   * One homology request (`path` ends in its query string). A `target_species` outside the
+   * comparison Ensembl runs for the source species answers a GenomeDB miss; when Ensembl's
+   * pan-taxonomic comparison holds both species, the request is repeated there. Membership is
+   * checked first because Ensembl crashes, rather than rejects, a pan request from a source
+   * outside it. A pair it cannot try fails as `target_not_compared`.
+   */
+  private async requestHomology(
+    path: string,
+    species: string,
+    targetSpecies: string | undefined,
+    ctx: Context,
+  ): Promise<{ raw: RawHomologyResponse; comparison?: 'pan_homology' }> {
+    const query = targetSpecies
+      ? `${path}&target_species=${encodeURIComponent(targetSpecies)}`
+      : path;
+    try {
+      return { raw: await this.fetchWithRetry<RawHomologyResponse>(query, ctx) };
+    } catch (err) {
+      if (!targetSpecies || !(err instanceof McpError) || !err.message.startsWith(GENOMEDB_MISS)) {
+        throw err;
+      }
+      const outsideDefault = `${targetSpecies} is outside the homology comparison Ensembl runs for ${species}, and`;
+      let members: ReadonlySet<string>;
+      try {
+        members = await this.getPanHomologySpecies(ctx);
+      } catch (readErr) {
+        if (ctx.signal.aborted) throw readErr;
+        ctx.log.warning('Pan-taxonomic species read failed', {
+          error: readErr instanceof Error ? readErr.message : String(readErr),
+        });
+        throw validationError(
+          `${outsideDefault} the species list of Ensembl's pan-taxonomic comparison could not be read, so the pair was not tried there; retrying later may answer it.`,
+          { reason: 'target_not_compared' },
+          { cause: readErr },
+        );
+      }
+      const outside = [species, targetSpecies].filter((name) => !members.has(name.toLowerCase()));
+      if (outside.length > 0) {
+        const viaOrtholog = outside.includes(species)
+          ? ` To reach ${targetSpecies}, omit target_species to find this gene's ortholog in a species that comparison holds (caenorhabditis_elegans for a Caenorhabditis gene), then query from that ortholog.`
+          : '';
+        throw validationError(
+          `${outsideDefault} Ensembl's pan-taxonomic comparison does not list ${outside.join(' or ')} among its species, which it names in Ensembl's internal form (homo_sapiens).${viaOrtholog}`,
+          { reason: 'target_not_compared' },
+        );
+      }
+      return {
+        raw: await this.fetchWithRetry<RawHomologyResponse>(`${query}&compara=pan_homology`, ctx),
+        comparison: 'pan_homology',
+      };
+    }
+  }
+
   async getHomologyBySymbol(
     symbol: string,
     species: string,
@@ -952,10 +1130,13 @@ export class EnsemblService {
     targetSpecies: string | undefined,
     ctx: Context,
   ): Promise<HomologyResult> {
-    let path = `/homology/symbol/${encodeURIComponent(species)}/${encodeURIComponent(symbol)}?type=${encodeURIComponent(type)}`;
-    if (targetSpecies) path += `&target_species=${encodeURIComponent(targetSpecies)}`;
-    const raw = await this.fetchWithRetry<RawHomologyResponse>(path, ctx);
-    return normalizeHomology(raw, symbol);
+    const { raw, comparison } = await this.requestHomology(
+      `/homology/symbol/${encodeURIComponent(species)}/${encodeURIComponent(symbol)}?type=${encodeURIComponent(type)}`,
+      species,
+      targetSpecies,
+      ctx,
+    );
+    return { ...normalizeHomology(raw, symbol), ...(comparison && { comparison }) };
   }
 
   async getHomologyById(
@@ -966,15 +1147,20 @@ export class EnsemblService {
     ctx: Context,
   ): Promise<HomologyResult> {
     const queryId = unversioned(id);
-    let path = `/homology/id/${encodeURIComponent(species)}/${encodeURIComponent(queryId)}?type=${encodeURIComponent(type)}`;
-    if (targetSpecies) path += `&target_species=${encodeURIComponent(targetSpecies)}`;
-    const raw = await this.fetchWithRetry<RawHomologyResponse>(path, ctx);
+    const { raw, comparison } = await this.requestHomology(
+      `/homology/id/${encodeURIComponent(species)}/${encodeURIComponent(queryId)}?type=${encodeURIComponent(type)}`,
+      species,
+      targetSpecies,
+      ctx,
+    );
     // An ID absent from the source species answers HTTP 200 {"data":[]}; a known gene
-    // with no homologs still carries its own entry with an empty homologies list.
-    if (!raw.data?.length) {
+    // with no homologs still carries its own entry with an empty homologies list. The
+    // pan-taxonomic comparison answers {"data":[]} for a gene outside its trees; the GenomeDB
+    // miss before it already showed the gene is in the source species.
+    if (!raw.data?.length && !comparison) {
       throw notFound(`Gene ID "${id}" not found in ${species}.`, { reason: 'not_found' });
     }
-    return normalizeHomology(raw, queryId);
+    return { ...normalizeHomology(raw, queryId), ...(comparison && { comparison }) };
   }
 
   // --- Xrefs ---

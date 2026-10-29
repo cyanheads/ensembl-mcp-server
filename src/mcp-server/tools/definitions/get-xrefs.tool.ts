@@ -14,7 +14,7 @@ const XrefEntrySchema = z.object({
     .string()
     .optional()
     .describe(
-      'Database name in Ensembl internal format (e.g. HGNC, Uniprot_gn, EntrezGene, MIM_GENE, RefSeq_mRNA).',
+      'Database name in Ensembl internal format (e.g. HGNC, Uniprot_gn, Uniprot/SWISSPROT, EntrezGene, MIM_GENE, RefSeq_mRNA).',
     ),
   dbDisplayName: z.string().optional().describe('Human-readable database display name.'),
   primaryId: z
@@ -29,20 +29,30 @@ const XrefEntrySchema = z.object({
     .optional()
     .describe('Display identifier — often the same as primaryId but may be a formatted accession.'),
   description: z.string().optional().describe('Description of the cross-reference entry.'),
+  infoType: z
+    .string()
+    .optional()
+    .describe(
+      'How Ensembl assigned the reference, e.g. DIRECT (from the external database), DEPENDENT (derived from another reference), PROJECTION (projected from an ortholog), SEQUENCE_MATCH, CHECKSUM.',
+    ),
+  infoText: z
+    .string()
+    .optional()
+    .describe(
+      'Detail Ensembl records for the assignment: its source (e.g. UniProt, GO_Central) or, for a projection, the ortholog it came from. Omitted when blank.',
+    ),
+  linkageTypes: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Evidence codes supporting the reference — GO evidence codes on GO terms (e.g. IDA experimental, IEA electronic, ISS sequence similarity). Omitted when Ensembl lists none.',
+    ),
 });
 
 export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
   title: 'Get Cross-Database References',
   description:
-    'Retrieve cross-database references for a gene or feature — HGNC, UniProt, EntrezGene, OMIM, ' +
-    'RefSeq, Reactome, and others. Returns each xref with its database name, primary ID, display ID, ' +
-    'and description. By default only the requested object level is queried; all_levels=true ' +
-    'includes transcript and translation references for a gene. The dbname filter narrows this scope. ' +
-    'IDs returned here chain to protein (pubchem via UniProt), literature (pubmed via PubMed IDs), ' +
-    'disease (OMIM via MIM_GENE), and pathway (Reactome) resources. ' +
-    'Requires an Ensembl stable ID — use ensembl_lookup_gene to get the ENSG… ID first. ' +
-    'Common dbname values: HGNC, Uniprot_gn, EntrezGene, MIM_GENE, RefSeq_mRNA, RefSeq_peptide, ' +
-    'Reactome_gene (gene pathways), Reactome (translation pathways), GO (Gene Ontology), ChEMBL.',
+    'Retrieve cross-database references for a gene or feature — HGNC, UniProt, EntrezGene, OMIM, RefSeq, Reactome, and others. Returns each xref with its database name, primary ID, display ID, and description, plus how Ensembl assigned it (infoType, infoText) and its evidence codes (linkageTypes, such as GO evidence codes) when supplied. By default only the requested object level is queried; all_levels=true includes transcript and translation references for a gene. The dbname filter narrows this scope. IDs returned here chain onward: a Uniprot/SWISSPROT accession to UniProt (protein function) and PubChem (bioassays against the protein), MIM_GENE to OMIM (disease), Reactome_gene and Reactome to Reactome (pathways), and PDB to structure sources. Requires an Ensembl stable ID — use ensembl_lookup_gene to get the ENSG… ID first. Common dbname values: HGNC, Uniprot_gn, Uniprot/SWISSPROT (reviewed UniProt accession, held on the translation: use all_levels=true from a gene or transcript), EntrezGene, MIM_GENE, RefSeq_mRNA, RefSeq_peptide, Reactome_gene (gene pathways), Reactome (translation pathways), GO (Gene Ontology), ChEMBL.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     id: z
@@ -59,12 +69,7 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
       .string()
       .optional()
       .describe(
-        'Filter to a specific external database by its Ensembl internal name. ' +
-          'Examples: HGNC (HGNC gene ID), Uniprot_gn (UniProt gene name), ' +
-          'EntrezGene (NCBI Gene ID), MIM_GENE (OMIM disease gene), ' +
-          'RefSeq_mRNA (NCBI RefSeq transcript), Reactome_gene (gene pathways), Reactome (translation pathways), ' +
-          'GO (Gene Ontology terms). Transcript/translation references may require all_levels=true ' +
-          'or the specific feature ID. Omit to return every database within the selected scope.',
+        'Filter to a specific external database by its Ensembl internal name. Examples: HGNC (HGNC gene ID), Uniprot_gn (UniProt gene name), Uniprot/SWISSPROT (reviewed UniProt accession, on the translation), EntrezGene (NCBI Gene ID), MIM_GENE (OMIM disease gene), RefSeq_mRNA (NCBI RefSeq transcript), Reactome_gene (gene pathways), Reactome (translation pathways), GO (Gene Ontology terms). Transcript/translation references may require all_levels=true or the specific feature ID. Omit to return every database within the selected scope.',
       ),
     all_levels: z
       .boolean()
@@ -146,15 +151,20 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
       return [{ type: 'text', text: lines.join('\n') }];
     }
 
-    // Group by database for readability
-    const byDb = new Map<string, typeof result.xrefs>();
+    /**
+     * Group by database and display name, in first-appearance order: one dbname can carry
+     * several display names (GO rows are `GO` or `Projected GO`), each its own heading.
+     */
+    const groups = new Map<string, typeof result.xrefs>();
     for (const x of result.xrefs) {
-      const db = x.dbname ?? 'Unknown';
-      if (!byDb.has(db)) byDb.set(db, []);
-      byDb.get(db)?.push(x);
+      const key = JSON.stringify([x.dbname, x.dbDisplayName]);
+      const entries = groups.get(key);
+      if (entries) entries.push(x);
+      else groups.set(key, [x]);
     }
 
-    for (const [db, entries] of byDb) {
+    for (const entries of groups.values()) {
+      const db = entries[0]?.dbname ?? 'Unknown';
       const displayName = entries[0]?.dbDisplayName;
       lines.push(
         renderHeading(
@@ -167,6 +177,12 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
         if (x.displayId && x.displayId !== x.primaryId)
           line += ` (${escapeMarkdownInline(x.displayId)})`;
         if (x.description) line += `: ${escapeMarkdownInline(x.description)}`;
+        const provenance = [
+          x.infoType && escapeMarkdownInline(x.infoType),
+          x.infoText && escapeMarkdownInline(x.infoText),
+          x.linkageTypes && `evidence ${x.linkageTypes.map(escapeMarkdownInline).join(', ')}`,
+        ].filter(Boolean);
+        if (provenance.length) line += ` [${provenance.join('; ')}]`;
         lines.push(line);
       }
       lines.push('');

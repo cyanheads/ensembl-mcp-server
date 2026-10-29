@@ -166,7 +166,7 @@ const cases = [
     () =>
       ensemblGetXrefs.format!({
         queriedId: marker,
-        totalCount: 1,
+        totalCount: 2,
         xrefs: [
           {
             primaryId: marker,
@@ -174,6 +174,16 @@ const cases = [
             description: marker,
             dbname: `${marker} database`,
             dbDisplayName: marker,
+            infoType: marker,
+            infoText: marker,
+            linkageTypes: [marker, marker],
+          },
+          // Same dbname, second display name (GO / Projected GO): its own heading.
+          {
+            primaryId: marker,
+            description: marker,
+            dbname: `${marker} database`,
+            dbDisplayName: `${marker} projected`,
           },
         ],
       }),
@@ -232,7 +242,7 @@ const occurrences = {
   sequence: 3,
   region: 12,
   homology: 9,
-  xrefs: 6,
+  xrefs: 14,
   variant: 24,
 };
 

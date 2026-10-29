@@ -4,7 +4,7 @@ description: Gates and identifier chains for the ensembl_* tools. Covers checkin
 license: Apache-2.0
 metadata:
   author: cyanheads
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Scope
@@ -38,7 +38,7 @@ Not here: population allele frequencies (colocated VEP records carry IDs, clinic
 
 **Read the homology `type` before you name "the ortholog".** `ortholog_one2many` and `ortholog_many2many` mean the relationship is not 1:1. Report every row for the target species, ranked by `percId` if you need an order. For example, human SOX9 maps to two zebrafish genes, both `one2many`.
 
-**Query homology from the vertebrate side.** A non-vertebrate gene's homology search runs against its own division. From a fly gene, `target_species: homo_sapiens` fails because Ensembl has no genome named `homo_sapiens` there. From the human gene, `target_species: drosophila_melanogaster` returns the fly ortholog.
+**Read the notice on a cross-division homology answer.** Ensembl runs a gene's homology in its own division's comparison. When `target_species` is outside it, as for a fly gene to `homo_sapiens` or a human gene to `arabidopsis_thaliana`, ensembl_get_homology answers from Ensembl's pan-taxonomic comparison and says so in `notice`. Its `taxonomyLevel` can be broader than the true last common ancestor: Metazoa for fly and human, which share Bilateria. A pair that comparison does not hold fails `target_not_compared`. Query from a gene in the other species instead: a rat gene with `target_species: drosophila_melanogaster` returns the fly ortholog that the fly gene cannot reach in rat. When the source species is the one outside it (a C. briggsae gene to `homo_sapiens`), the reverse query fails too: find the gene's ortholog in a species the comparison holds, such as `caenorhabditis_elegans`, and query from that ortholog.
 
 **Set the species to match a non-human gene ID in ensembl_get_homology.** That tool defaults the species to `homo_sapiens` even when you pass an ID. A mouse `ENSMUSG…` ID with the default species fails as `not_found … in homo_sapiens`. Every other tool infers the species from the ID.
 

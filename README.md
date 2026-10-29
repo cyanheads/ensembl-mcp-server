@@ -110,15 +110,17 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 ### `ensembl_get_homology` <sub>tool</sub>
 
 - Exactly one of `symbol` (+ `species`, default `homo_sapiens`) or `id`; `type` is `orthologues` (default), `paralogues`, or `all`; optional `target_species` filter
-- `max_results` caps the list (default `25`, `0` uncapped) while `totalCount` reports the true count. Errors: `not_found`, `invalid_species` (unknown `species` or `target_species`), `no_input`, `conflicting_input`
+- A `target_species` outside the comparison Ensembl runs for the source species (a fly gene to `homo_sapiens`) is answered from Ensembl's pan-taxonomic comparison when it holds both species, with a notice saying so
+- `max_results` caps the list (default `25`, `0` uncapped) while `totalCount` reports the true count. Errors: `not_found`, `invalid_species` (unknown `species` or `target_species`), `target_not_compared` (a target outside the source species' comparison that the pan-taxonomic comparison cannot answer), `no_input`, `conflicting_input`
 - Each row retains optional `targetProteinId` for `ensembl_get_sequence` with `type:"protein"`. Optional `targetSymbol` comes from a lookup of the returned rows' distinct gene IDs, in chunks of at most 1,000, with one five-second budget bounded by the call's remaining deadline and no retries. Missing names or failed lookups retain every primary homolog with a notice; cancellation still aborts
 
 ---
 
 ### `ensembl_get_xrefs` <sub>tool</sub>
 
-- `id` (`ENSG…`/`ENST…`/`ENSP…`) required; optional `dbname` filter (e.g. `HGNC`, `Uniprot_gn`, `EntrezGene`, `MIM_GENE`, `RefSeq_mRNA`, `Reactome_gene` for gene pathways, `Reactome` for translation pathways, `GO`)
+- `id` (`ENSG…`/`ENST…`/`ENSP…`) required; optional `dbname` filter (e.g. `HGNC`, `Uniprot_gn`, `Uniprot/SWISSPROT` for the reviewed UniProt accession on the translation, `EntrezGene`, `MIM_GENE`, `RefSeq_mRNA`, `Reactome_gene` for gene pathways, `Reactome` for translation pathways, `GO`)
 - Default `all_levels:false` queries the requested object's level. Set `all_levels:true` to include a gene's transcript and translation references, independently of `dbname`; for example, gene-level `RefSeq_mRNA` may need this or a transcript ID. Empty lists remain successful with `totalCount:0`. Errors: `not_found`
+- Each reference carries how Ensembl assigned it (`infoType`: `DIRECT`, `DEPENDENT`, `PROJECTION`, …; `infoText`: its source, such as `UniProt` or the ortholog a projection came from) and its evidence codes (`linkageTypes`, GO evidence such as `IDA` or `IEA`) when supplied, so `GO` and `Projected GO` rows, and experimental and electronic annotations, stay distinct on both surfaces
 
 ---
 
@@ -154,7 +156,7 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 ### `ensembl_gene_dossier` <sub>prompt</sub>
 
 - Arguments: `gene_symbol` required; `species` optional (default `homo_sapiens`)
-- Sequences a 7-step workflow: resolve the gene → fetch the protein sequence → find variants in the locus → predict variant consequences → find cross-species orthologs → get external database IDs → synthesize the dossier
+- Sequences a 7-step workflow: resolve the gene → fetch the protein sequence → find variants in the locus → predict variant consequences → find model-organism orthologs → get external database IDs → synthesize the dossier
 
 ## Features
 
@@ -173,7 +175,7 @@ Agent-friendly output:
 
 - `ensembl_get_sequence` returns bounded windows (10,000 characters by default) with the full length and a `nextOffset` to continue
 - `ensembl_list_species` is the discovery step for internal species names, 50 per page with a `nextOffset`
-- Xref IDs from `ensembl_get_xrefs` are described as inputs for protein and literature servers; the `ensembl_gene_dossier` prompt chains 6 of the 7 tools
+- Xref IDs from `ensembl_get_xrefs` are described as inputs for protein, disease, pathway, and structure servers; the `ensembl_gene_dossier` prompt chains 6 of the 7 tools
 
 ## Getting started
 

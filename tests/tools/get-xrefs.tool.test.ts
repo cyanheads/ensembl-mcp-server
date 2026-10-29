@@ -40,7 +40,7 @@ const hgncXref: XrefEntry = {
 
 const uniprotXref: XrefEntry = {
   dbname: 'Uniprot_gn',
-  dbDisplayName: 'UniProtKB/Swiss-Prot',
+  dbDisplayName: 'UniProtKB Gene Name',
   primaryId: 'P51587',
   displayId: 'BRCA2_HUMAN',
 };
@@ -229,6 +229,66 @@ describe('ensemblGetXrefs', () => {
     expect(text).toContain('675');
   });
 
+  it('renders a database with one display name under one heading', () => {
+    const second: XrefEntry = { ...hgncXref, primaryId: 'HGNC:11998', displayId: 'TP53' };
+    const blocks = ensemblGetXrefs.format!({
+      xrefs: [hgncXref, uniprotXref, second],
+      totalCount: 3,
+      queriedId: 'ENSG00000139618',
+    });
+    const text = (blocks[0] as { type: 'text'; text: string }).text;
+    expect(text).toContain(
+      '### HGNC Symbol (HGNC)\n- **HGNC:1101** (BRCA2): BRCA2 DNA repair associated\n' +
+        '- **HGNC:11998** (TP53): BRCA2 DNA repair associated\n\n' +
+        '### UniProtKB Gene Name (Uniprot_gn)\n- **P51587** (BRCA2_HUMAN)\n',
+    );
+    expect(text.match(/^### /gm)).toHaveLength(2);
+  });
+
+  /** Ensembl gives `dbname: "GO"` two display names, interleaved in its answer (ENST00000269305). */
+  const goDirect: XrefEntry = {
+    dbname: 'GO',
+    dbDisplayName: 'GO',
+    primaryId: 'GO:0000978',
+    displayId: 'GO:0000978',
+    description: 'RNA polymerase II cis-regulatory region sequence-specific DNA binding',
+  };
+  const goProjected: XrefEntry = {
+    ...goDirect,
+    dbDisplayName: 'Projected GO',
+    primaryId: 'GO:0001228',
+    displayId: 'GO:0001228',
+    description: 'DNA-binding transcription activator activity',
+  };
+  const goDirect2: XrefEntry = {
+    ...goDirect,
+    primaryId: 'GO:0005634',
+    displayId: 'GO:0005634',
+    description: 'nucleus',
+  };
+  const goSection =
+    '### GO\n- **GO:0000978**: RNA polymerase II cis-regulatory region sequence-specific DNA binding\n' +
+    '- **GO:0005634**: nucleus\n';
+  const projectedSection =
+    '### Projected GO (GO)\n- **GO:0001228**: DNA-binding transcription activator activity\n';
+
+  it.each([
+    ['a GO row', [goDirect, goProjected, goDirect2], [goSection, projectedSection]],
+    ['a Projected GO row', [goProjected, goDirect, goDirect2], [projectedSection, goSection]],
+  ])(
+    'heads each display name of one dbname separately when %s comes first (issue #57)',
+    (_first, xrefs, sections) => {
+      const blocks = ensemblGetXrefs.format!({
+        xrefs,
+        totalCount: 3,
+        queriedId: 'ENST00000269305',
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain(`${sections[0]}\n${sections[1]}`);
+      expect(text.match(/^### /gm)).toHaveLength(2);
+    },
+  );
+
   it('formats empty xref list without crash', () => {
     const output = { xrefs: [], totalCount: 0, queriedId: 'ENSG00000139618' };
     const blocks = ensemblGetXrefs.format!(output);
@@ -241,6 +301,134 @@ describe('ensemblGetXrefs', () => {
     const output = { xrefs: [sparseXref], totalCount: 1, queriedId: 'ENSG00000139618' };
     const blocks = ensemblGetXrefs.format!(output);
     expect(blocks[0]!.type).toBe('text');
+  });
+});
+
+describe('ensemblGetXrefs reference provenance (issue #59)', () => {
+  const description = 'RNA polymerase II cis-regulatory region sequence-specific DNA binding';
+  /** The five GO:0000978 rows /xrefs/id/ENST00000269305 returns, in Ensembl's order. */
+  const rows = [
+    ['Projected GO', 'PROJECTION', 'from mus_musculus translation ENSMUSP00000104298', ['IEA']],
+    ['GO', 'DIRECT', 'UniProt', ['ISS']],
+    ['GO', 'DIRECT', 'GO_Central', ['IBA']],
+    ['GO', 'DIRECT', 'ARUK-UCL', ['IDA']],
+    ['GO', 'DIRECT', 'ParkinsonsUK-UCL', ['IDA']],
+  ] as const;
+
+  it('carries infoType, infoText and linkageTypes on both surfaces', async () => {
+    const http = createFetchMock([
+      {
+        match: (request) => new URL(request.url).hostname === 'rest.ensembl.org',
+        respond: Response.json(
+          rows.map(([db_display_name, info_type, info_text, linkage_types]) => ({
+            dbname: 'GO',
+            db_display_name,
+            primary_id: 'GO:0000978',
+            display_id: 'GO:0000978',
+            description,
+            info_type,
+            info_text,
+            linkage_types,
+            synonyms: [],
+            version: '0',
+          })),
+        ),
+      },
+    ]);
+    http.install();
+    upstream.real = true;
+    initEnsemblService({} as AppConfig, createInMemoryStorage());
+    try {
+      const result = await runToolContract(ensemblGetXrefs, {
+        id: 'ENST00000269305',
+        dbname: 'GO',
+      });
+      expect(result.isError).toBeUndefined();
+      expect((result.structuredContent as { xrefs: XrefEntry[] }).xrefs).toEqual(
+        rows.map(([dbDisplayName, infoType, infoText, linkageTypes]) => ({
+          dbname: 'GO',
+          dbDisplayName,
+          primaryId: 'GO:0000978',
+          displayId: 'GO:0000978',
+          description,
+          infoType,
+          infoText,
+          linkageTypes,
+        })),
+      );
+      const lines = (result.content ?? [])
+        .map((b) => (b.type === 'text' ? b.text : ''))
+        .join('\n')
+        .split('\n');
+      const expected = [
+        `- **GO:0000978**: ${description} [PROJECTION; from mus_musculus translation ENSMUSP00000104298; evidence IEA]`,
+        `- **GO:0000978**: ${description} [DIRECT; UniProt; evidence ISS]`,
+        `- **GO:0000978**: ${description} [DIRECT; GO_Central; evidence IBA]`,
+        `- **GO:0000978**: ${description} [DIRECT; ARUK-UCL; evidence IDA]`,
+        `- **GO:0000978**: ${description} [DIRECT; ParkinsonsUK-UCL; evidence IDA]`,
+      ];
+      for (const line of expected) expect(lines).toContain(line);
+      expect(lines.filter((l) => l.startsWith('- **GO:0000978**'))).toHaveLength(5);
+    } finally {
+      upstream.real = false;
+      http.restore();
+    }
+  });
+
+  it.each([
+    ['infoType alone', { infoType: 'DEPENDENT' }, ' [DEPENDENT]'],
+    ['infoText alone', { infoText: 'UniProt' }, ' [UniProt]'],
+    ['linkageTypes alone', { linkageTypes: ['IEA'] }, ' [evidence IEA]'],
+    [
+      'several evidence codes',
+      { linkageTypes: ['IEA', 'IDA', 'IMP'] },
+      ' [evidence IEA, IDA, IMP]',
+    ],
+    ['none', {}, ''],
+  ])('renders %s after the row', (_case, provenance, tail) => {
+    const blocks = ensemblGetXrefs.format!({
+      xrefs: [{ ...hgncXref, ...provenance }],
+      totalCount: 1,
+      queriedId: 'ENSG00000139618',
+    });
+    const text = (blocks[0] as { type: 'text'; text: string }).text;
+    expect(text.split('\n')).toContain(
+      `- **HGNC:1101** (BRCA2): BRCA2 DNA repair associated${tail}`,
+    );
+  });
+
+  it('describes the provenance fields on the output schema', () => {
+    const entry = ensemblGetXrefs.output.shape.xrefs.element.shape;
+    expect(entry.infoType.description).toContain('PROJECTION');
+    expect(entry.infoText.description).toContain('Omitted when blank');
+    expect(entry.linkageTypes.description).toContain('evidence codes');
+  });
+});
+
+describe('ensemblGetXrefs onward chains (issue #54)', () => {
+  it('names only chains the returned databases support', () => {
+    const { description } = ensemblGetXrefs;
+    // No level of a gene's references carries a PubMed database.
+    expect(description).not.toContain('PubMed IDs');
+    expect(description).not.toMatch(/literature/i);
+    expect(description).toContain(
+      'a Uniprot/SWISSPROT accession to UniProt (protein function) and PubChem (bioassays against the protein)',
+    );
+    expect(description).toContain('MIM_GENE to OMIM (disease)');
+    expect(description).toContain('Reactome_gene and Reactome to Reactome (pathways)');
+    expect(description).toContain('PDB to structure sources');
+  });
+
+  it('lists Uniprot/SWISSPROT as a common dbname, held on the translation', () => {
+    expect(ensemblGetXrefs.description).toContain(
+      'Uniprot/SWISSPROT (reviewed UniProt accession, held on the translation',
+    );
+    expect(ensemblGetXrefs.input.shape.dbname.description).toContain(
+      'Uniprot/SWISSPROT (reviewed UniProt accession, on the translation)',
+    );
+    expect(ensemblGetXrefs.output.shape.xrefs.element.shape.dbname.description).toContain(
+      'Uniprot/SWISSPROT',
+    );
   });
 });
 
