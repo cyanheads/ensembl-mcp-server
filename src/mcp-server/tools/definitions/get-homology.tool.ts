@@ -339,7 +339,7 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     lines.push(`**Type:** ${escapeMarkdownInline(result.queryType)} | **Found:** ${foundLabel}\n`);
 
     if (result.homologs.length === 0) {
-      lines.push('No homologs found. Try type=all or remove the target_species filter.');
+      lines.push('No homologs found.');
       return [{ type: 'text', text: lines.join('\n') }];
     }
 

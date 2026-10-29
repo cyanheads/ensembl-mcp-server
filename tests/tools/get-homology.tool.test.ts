@@ -224,7 +224,7 @@ describe('ensemblGetHomology', () => {
     expect(text).toContain('ortholog_one2one');
   });
 
-  it('formats empty homology results with guidance', () => {
+  it('formats empty homology results, leaving the guidance to the notice', () => {
     const output = {
       homologs: [],
       totalCount: 0,
@@ -234,8 +234,8 @@ describe('ensemblGetHomology', () => {
     };
     const blocks = ensemblGetHomology.format!(output);
     const text = (blocks[0] as { type: 'text'; text: string }).text;
-    expect(text).toContain('No homologs found');
-    expect(text).toContain('type=all');
+    expect(text.split('\n')).toContain('No homologs found.');
+    expect(text).not.toContain('target_species');
   });
 
   it('formats sparse homology entry (only targetId) without crash', () => {
@@ -578,7 +578,10 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
         'No orthologues found for "ENSG00000139618" in homo_sapiens targeting ' +
         'saccharomyces_cerevisiae. Try type=all or remove the target_species filter.',
     });
-    expect(contentText(result)).toContain('No homologs found. Try type=all');
+    const { notice } = result.structuredContent as { notice: string };
+    const lines = contentText(result).split('\n');
+    expect(lines).toContain('No homologs found.');
+    expect(lines).toContain(`> ${escapeMarkdownInline(notice)}`);
     expect(http.calls[0]?.request.url).toBe(
       'https://rest.ensembl.org/homology/id/homo_sapiens/ENSG00000139618?type=orthologues&target_species=saccharomyces_cerevisiae',
     );
@@ -595,6 +598,7 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
       homologs: [],
       notice: 'No orthologues found for "ENSG00000139618" in homo_sapiens. Try type=all.',
     });
+    expect(contentText(result)).not.toContain('target_species');
   });
 
   /** Upstream URLs of the homology requests the call sent, in order. */
