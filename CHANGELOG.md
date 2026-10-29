@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.1](changelog/0.7.x/0.7.1.md) — 2026-10-29
+
+Homology to a target_species outside the source species' comparison is answered from Ensembl's pan-taxonomic comparison or fails with a declared reason. Xrefs gain infoType, infoText, and linkageTypes and separate GO from Projected GO. Non-Ensembl canonicalTranscript IDs lose a trailing dot.
+
 ## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-10-28
 
 Publishes the ensembl-guide agent skill as an MCP resource and moves to mcp-ts-core 0.13.18, whose HTTP transport no longer retains memory on every request.
