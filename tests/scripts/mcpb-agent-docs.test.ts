@@ -1,7 +1,8 @@
 /**
  * @fileoverview Bundle agent-doc selector: `scripts/clean-mcpb.ts` strips, and
- * `scripts/lint-packaging.ts` check 8 rejects, agent-doc trees at a dependency's
- * package root while the MCP SDK's runtime `dist/ext/skills/` modules ship.
+ * `scripts/lint-packaging.ts` check 8 rejects, agent-doc trees and
+ * `AGENTS.md`/`CLAUDE.md` at a dependency's package root and `SKILL.md`
+ * anywhere, while the MCP SDK's runtime `dist/ext/skills/` modules ship.
  * @module tests/scripts/mcpb-agent-docs.test
  */
 
@@ -31,6 +32,7 @@ const runtimeEntries = [
   'node_modules/skills/index.js',
   'node_modules/@acme/skills/index.js',
   'node_modules/@acme/framework-skills/index.js',
+  'node_modules/some-pkg/docs/AGENTS.md',
   'skills/ensembl-guide/SKILL.md',
   'dist/index.js',
 ];
@@ -45,6 +47,9 @@ const agentDocEntries = [
   'node_modules/a/node_modules/@scope/b/skills/x/README.md',
   'node_modules/a/node_modules/b/.claude/commands/run.md',
   'node_modules/some-pkg/docs/SKILL.md',
+  'node_modules/@cyanheads/mcp-ts-core/CLAUDE.md',
+  'node_modules/some-pkg/AGENTS.md',
+  'node_modules/a/node_modules/@scope/b/CLAUDE.md',
 ];
 
 describe('bundle agent-doc selector', () => {
