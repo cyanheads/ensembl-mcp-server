@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.2](changelog/0.7.x/0.7.2.md) — 2026-11-14
+
+ensembl_predict_variant reports strand on records and colocated variants and sends reverse-strand region input on the forward strand. ensembl_query_region and ensembl_get_homology page with offset and nextOffset. The gene and transcript resources refuse IDs Ensembl holds as another object type.
+
 ## [0.7.1](changelog/0.7.x/0.7.1.md) — 2026-10-29
 
 Homology to a target_species outside the source species' comparison is answered from Ensembl's pan-taxonomic comparison or fails with a declared reason. Xrefs gain infoType, infoText, and linkageTypes and separate GO from Projected GO. Non-Ensembl canonicalTranscript IDs lose a trailing dot.
