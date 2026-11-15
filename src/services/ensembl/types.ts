@@ -63,6 +63,17 @@ export type RawTranscriptRecord = {
   version?: number;
 };
 
+/**
+ * The fields a `/lookup/id` record carries whatever it holds: its type (`Gene`, `Transcript`,
+ * `Translation`, `Exon`), and in `Parent` a transcript's gene or a translation's transcript.
+ * Gene and Exon records carry no `Parent`.
+ */
+export type RawLookupObject = {
+  id: string;
+  object_type?: string;
+  Parent?: string;
+};
+
 export type RawSequenceRecord = {
   id: string;
   seq: string;
@@ -143,6 +154,8 @@ export type RawColocatedVariant = {
   clin_sig_ref_allele?: string;
   id?: string;
   allele_string?: string;
+  /** Strand `allele_string` and the `clin_sig_allele` keys read on, independent of the record's. */
+  strand?: number;
   clinical_significance?: string[];
   frequencies?: Record<string, unknown>;
   pubmed?: number[];
@@ -292,6 +305,17 @@ export type TranscriptRecord = {
   lengthInBp?: number;
 };
 
+/**
+ * What a typed lookup found when Ensembl holds the stable ID as another kind of record than
+ * the one asked for: its `object_type` as Ensembl names it, and its parent when Ensembl names
+ * one (a transcript's gene, a translation's transcript).
+ */
+export type OtherObject = {
+  kind: 'other';
+  objectType: string;
+  parentId?: string;
+};
+
 export type SequenceRecord = {
   id: string;
   type: string;
@@ -351,12 +375,16 @@ export type ColocatedVariant = {
   clinicalSignificanceReferenceAllele?: string;
   id?: string;
   alleleString?: string;
+  /** Strand `alleleString` and the `clinicalSignificanceByAllele` keys read on. */
+  strand?: number;
   clinicalSignificance?: string[];
   pubmed?: number[];
 };
 
 export type VepRecord = {
   alleleString?: string;
+  /** Strand `alleleString` and every consequence's `variantAllele` read on. */
+  strand?: number;
   input?: string;
   chromosome?: string;
   start?: number;

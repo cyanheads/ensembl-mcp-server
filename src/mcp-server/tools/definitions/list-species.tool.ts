@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import { pageOf, pastEndNotice } from '@/mcp-server/tools/paging.js';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 
 const DIVISION_VALUES = [
@@ -38,13 +39,7 @@ const SpeciesItemSchema = z.object({
 export const ensemblListSpecies = tool('ensembl_list_species', {
   title: 'List Ensembl Species',
   description:
-    'List species supported by Ensembl with display name, common name, assembly, taxon ID, and division. ' +
-    'Required discovery step — species names like homo_sapiens are opaque to non-biologists and are the ' +
-    'input format every other Ensembl tool expects. Use nameContains to find a species by partial name ' +
-    'match; filter by division to select one. With no division, lists the endpoint default division — ' +
-    'the vertebrates (~356 species on the default GRCh38 endpoint). Species are sorted by internal name ' +
-    'and returned max_results at a time (default 50); totalCount reports every match, and when more ' +
-    'follow, nextOffset is the offset for the next page.',
+    'List species supported by Ensembl with display name, common name, assembly, taxon ID, and division. Required discovery step — species names like homo_sapiens are opaque to non-biologists and are the input format every other Ensembl tool expects. Use nameContains to find a species by partial name match; filter by division to select one. With no division, lists the endpoint default division — the vertebrates (~356 species on the default GRCh38 endpoint). Species are sorted by internal name and returned max_results at a time (default 25); totalCount reports every match, and when more follow, nextOffset is the offset for the next page.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     division: z
@@ -69,11 +64,9 @@ export const ensemblListSpecies = tool('ensembl_list_species', {
       .number()
       .int()
       .min(0)
-      .default(50)
+      .default(25)
       .describe(
-        'Maximum number of species to return, counted from offset. Default 50. ' +
-          'Set to 0 to return every matching species from offset to the end, uncapped. ' +
-          'totalCount always reports the full number of matches before this cap.',
+        'Maximum number of species to return, counted from offset. Default 25. Set to 0 to return every matching species from offset to the end, uncapped. totalCount always reports the full number of matches before this cap.',
       ),
     offset: z
       .number()
@@ -162,24 +155,15 @@ export const ensemblListSpecies = tool('ensembl_list_species', {
     const totalCount = species.length;
     ctx.enrich.total(totalCount);
 
-    const end = input.max_results > 0 ? input.offset + input.max_results : totalCount;
-    const page = species.slice(input.offset, end);
-    const pageEnd = input.offset + page.length;
-    const nextOffset = pageEnd < totalCount ? pageEnd : undefined;
+    const { page, nextOffset } = pageOf(species, input.offset, input.max_results || totalCount);
 
     if (totalCount > 0 && input.offset >= totalCount) {
-      ctx.enrich.notice(
-        `No species returned: offset ${input.offset} is at or past the end of the ${totalCount} ` +
-          `matching species. Request an offset below ${totalCount}, or omit offset for the first page.`,
-      );
+      ctx.enrich.notice(pastEndNotice('species', input.offset, totalCount));
     } else if (nextOffset !== undefined) {
       ctx.enrich.truncated({
         shown: page.length,
         cap: input.max_results,
-        guidance:
-          `Showing ${page.length} of ${totalCount} species from offset ${input.offset}. ` +
-          `Call again with offset ${nextOffset} (nextOffset) for the next page, set max_results to 0 ` +
-          'for every remaining species, or narrow with nameContains.',
+        guidance: `Showing ${page.length} of ${totalCount} species from offset ${input.offset}. Call again with offset ${nextOffset} (nextOffset) for the next page, set max_results to 0 for every remaining species, or narrow with nameContains.`,
       });
     }
 

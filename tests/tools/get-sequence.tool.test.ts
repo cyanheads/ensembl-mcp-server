@@ -5,7 +5,7 @@
 
 import { notFound, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { ensemblGetSequence } from '@/mcp-server/tools/definitions/get-sequence.tool.js';
 import type { SequenceRecord } from '@/services/ensembl/types.js';
 
@@ -735,5 +735,58 @@ describe('ensemblGetSequence blank id (issue #22)', () => {
       0,
       expect.anything(),
     );
+  });
+});
+
+describe('ensemblGetSequence numbers under a non-English process locale', () => {
+  const brca2 = dna(85_183);
+  const formatNumber = Number.prototype.toLocaleString;
+  let germanDefault: MockInstance;
+
+  beforeEach(() => {
+    mockGetSequenceById.mockReset();
+    mockGetSequenceById.mockResolvedValue({
+      id: 'ENSG00000139618',
+      type: 'genomic',
+      seq: brca2,
+      length: brca2.length,
+    });
+    // As under LANG=de_DE.UTF-8: a call that leaves the locale to the process groups with ".".
+    germanDefault = vi.spyOn(Number.prototype, 'toLocaleString').mockImplementation(function (
+      this: number,
+      locales,
+      options,
+    ) {
+      return formatNumber.call(this, locales ?? 'de-DE', options);
+    });
+  });
+
+  afterEach(() => {
+    germanDefault.mockRestore();
+  });
+
+  it('renders the length, window, and truncation notice with en-US grouping', async () => {
+    expect((85_183).toLocaleString()).toBe('85.183');
+    const result = await runToolContract(ensemblGetSequence, { id: 'ENSG00000139618' });
+    const structured = result.structuredContent as WindowResult;
+    expect(structured.notice).toBe(
+      'Showing 10,000 of 85,183 characters from offset 0. Call again with offset 10000 for the next window, or set max_length to 0 for everything from offset to the end.',
+    );
+    const text = contentText(result);
+    expect(text).toContain('**Length:** 85,183 bp');
+    expect(text).toContain('**Window:** 10,000 characters from offset 0 of 85,183');
+    expect(text).toContain('> Showing 10,000 of 85,183 characters');
+    expect(text).not.toContain('85.183');
+  });
+
+  it('renders the past-the-end notice with en-US grouping', async () => {
+    const result = await runToolContract(ensemblGetSequence, {
+      id: 'ENSG00000139618',
+      offset: 90_000,
+    });
+    expect((result.structuredContent as WindowResult).notice).toBe(
+      'No characters returned: offset 90000 is at or past the end of the sequence, which is 85,183 characters long. Request an offset below the length.',
+    );
+    expect(contentText(result)).not.toContain('85.183');
   });
 });

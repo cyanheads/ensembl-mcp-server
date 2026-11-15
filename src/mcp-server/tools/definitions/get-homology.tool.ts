@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import { pageOf, pastEndNotice } from '@/mcp-server/tools/paging.js';
 import { renderHeading } from '@/mcp-server/tools/render-heading.js';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
 import type { HomologyEntry, HomologyResult } from '@/services/ensembl/types.js';
@@ -59,7 +60,7 @@ const HomologyEntrySchema = z.object({
 
 export const ensemblGetHomology = tool('ensembl_get_homology', {
   title: 'Get Gene Homologs',
-  description: `Find orthologs and/or paralogs of a gene across species. Returns each homolog's stable ID, species, homology type (ortholog_one2one, ortholog_one2many, paralog_many2many, etc.), percId and percPos (percent identical and positive positions, over the target protein's length), and taxonomy level. Essential for cross-species research — for example, "what is the mouse equivalent of human TP53?" or "how conserved is BRCA2 across mammals?". Provide either symbol + species or a stable gene ID. Target species can be filtered to a single species or left open to return all available homologs. A target_species outside the comparison Ensembl runs for the source species is answered from Ensembl's pan-taxonomic comparison when that comparison holds both species. Includes targetProteinId when available for ensembl_get_sequence with type="protein". targetSymbol is best-effort: a secondary gene lookup shares five seconds across the returned rows and the remaining call deadline; missing names never remove homologs.`,
+  description: `Find orthologs and/or paralogs of a gene across species. Returns each homolog's stable ID, species, homology type (ortholog_one2one, ortholog_one2many, paralog_many2many, etc.), percId and percPos (percent identical and positive positions, over the target protein's length), and taxonomy level. Essential for cross-species research — for example, "what is the mouse equivalent of human TP53?" or "how conserved is BRCA2 across mammals?". Provide either symbol + species or a stable gene ID. Target species can be filtered to a single species or left open to return all available homologs. Homologs keep Ensembl's own order, which starts with the closest relatives, and are returned max_results at a time (default 25); totalCount reports every homolog, and when more follow, nextOffset is the offset for the next page. A target_species outside the comparison Ensembl runs for the source species is answered from Ensembl's pan-taxonomic comparison when that comparison holds both species. Includes targetProteinId when available for ensembl_get_sequence with type="protein". targetSymbol is best-effort: a secondary gene lookup shares ten seconds across the returned rows and the remaining call deadline; missing names never remove homologs.`,
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     symbol: z
@@ -112,10 +113,15 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       .min(0)
       .default(25)
       .describe(
-        'Maximum number of homologs to return. Broad orthology queries ' +
-          '(e.g. BRCA2 across all species) can return 150+ homologs; the default keeps ' +
-          'responses focused. Set to 0 to return every homolog uncapped. ' +
-          'totalCount always reports the true number available before this cap.',
+        'Maximum number of homologs to return, counted from offset. Default 25. Broad orthology queries (e.g. BRCA2 across all species) can return 150+ homologs. Set to 0 to return every homolog from offset to the end, uncapped. totalCount always reports the full number available before offset and this cap.',
+      ),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe(
+        "0-based position in Ensembl's homolog order where the returned page starts. Default 0. Pass nextOffset from a previous response to fetch the following page; an offset at or past totalCount returns no homologs.",
       ),
   }),
   output: z.object({
@@ -126,14 +132,18 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
         ),
       )
       .describe(
-        'Homologous genes found for the query gene, capped to max_results. ' +
-          'totalCount reports the full count available before the cap.',
+        "Homologous genes for the query gene, in Ensembl's order: at most max_results entries starting at offset.",
       ),
     totalCount: z
       .number()
       .describe(
-        'Total number of homologs available before the max_results cap. ' +
-          'Exceeds the returned homologs count when the list was capped.',
+        'Total number of homologs available before offset and the max_results cap. Exceeds the returned homologs count when the list was paged.',
+      ),
+    nextOffset: z
+      .number()
+      .optional()
+      .describe(
+        'Offset of the first homolog after this page — pass it as offset to fetch the next page. Present only when more homologs follow.',
       ),
     queryId: z.string().describe('The resolved Ensembl gene ID used for the homology query.'),
     querySpecies: z.string().describe('The source species used for the query.'),
@@ -144,14 +154,14 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       .string()
       .optional()
       .describe(
-        "Guidance when the homologs come from Ensembl's pan-taxonomic comparison, no homologs are found, the list was capped, or symbol enrichment is incomplete.",
+        "Guidance when the homologs come from Ensembl's pan-taxonomic comparison, no homologs are found, the offset is past the end, more homologs follow this page, or symbol enrichment is incomplete.",
       ),
     truncated: z
       .boolean()
       .optional()
-      .describe('True when the homolog list was capped at max_results.'),
-    shown: z.number().optional().describe('Number of homologs returned after the max_results cap.'),
-    cap: z.number().optional().describe('The max_results limit applied to the homolog list.'),
+      .describe('True when more homologs follow this page; request nextOffset to continue.'),
+    shown: z.number().optional().describe('Number of homologs returned on this page.'),
+    cap: z.number().optional().describe('The max_results limit applied to this page.'),
   },
 
   enrichmentTrailer: {
@@ -206,6 +216,8 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       species: input.species,
       targetSpecies: input.target_species,
       type: input.type,
+      offset: input.offset,
+      maxResults: input.max_results,
     });
     const service = getEnsemblService();
 
@@ -272,16 +284,15 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
       queryId = result.resolvedQueryId ?? submittedSymbol;
     }
 
-    // Ensembl returns the full homolog set; cap post-fetch so broad orthology
-    // queries stay compact by default. totalCount stays the true available count
-    // so a caller is never misled about completeness (max_results = 0 disables).
-    const availableCount = homologs.length;
-    const returned = input.max_results > 0 ? homologs.slice(0, input.max_results) : homologs;
+    // Ensembl returns the full homolog set, in the same order on every call (closest
+    // relatives first), so pages are slices of it; Ensembl has no paging of its own.
+    const totalCount = homologs.length;
+    const { page, nextOffset } = pageOf(homologs, input.offset, input.max_results || totalCount);
     const names = await service.getHomologyTargetSymbols(
-      returned.map((h) => h.targetId),
+      page.map((h) => h.targetId),
       ctx,
     );
-    const enriched = returned.map((h) => {
+    const enriched = page.map((h) => {
       const name = names.get(h.targetId);
       return name ? { ...h, targetSymbol: name } : h;
     });
@@ -293,27 +304,27 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
         `${input.target_species} is outside the homology comparison Ensembl runs for ${input.species}, so this answer comes from Ensembl's pan-taxonomic comparison (pan_homology), whose taxonomyLevel can name a broader clade than the two species' last common ancestor.`,
       );
     }
-    if (returned.length === 0) {
+    if (totalCount === 0) {
       fragments.push(
         input.target_species
           ? `No ${input.type} found for "${queryId}" in ${input.species} targeting ${input.target_species}. Try type=all or remove the target_species filter.`
           : `No ${input.type} found for "${queryId}" in ${input.species}. Try type=all.`,
       );
-    } else if (returned.length < availableCount) {
+    } else if (input.offset >= totalCount) {
+      fragments.push(pastEndNotice('homologs', input.offset, totalCount));
+    } else if (nextOffset !== undefined) {
       fragments.push(
-        `Showing ${returned.length} of ${availableCount} homologs. ` +
-          'Raise max_results (0 returns all) or set target_species to narrow to one species.',
+        `Showing ${page.length} of ${totalCount} homologs from offset ${input.offset}. Call again with offset ${nextOffset} (nextOffset) for the next page, ${input.target_species ? 'or set max_results to 0 for every remaining homolog.' : 'set max_results to 0 for every remaining homolog, or set target_species to narrow to one species.'}`,
       );
     }
     if (missingNames) {
       fragments.push(
-        `Target symbols are unavailable for ${missingNames} returned homologs: lookup failed, exhausted its budget, or supplied no name. ` +
-          'All homologs are retained; use ensembl_lookup_gene with their targetId to look up missing names.',
+        `Target symbols are unavailable for ${missingNames} returned homologs: lookup failed, exhausted its budget, or supplied no name. All homologs are retained; use ensembl_lookup_gene with their targetId to look up missing names.`,
       );
     }
-    if (returned.length < availableCount) {
+    if (nextOffset !== undefined) {
       ctx.enrich.truncated({
-        shown: returned.length,
+        shown: page.length,
         cap: input.max_results,
         guidance: fragments.join(' '),
       });
@@ -323,7 +334,8 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
 
     return {
       homologs: enriched,
-      totalCount: availableCount,
+      totalCount,
+      ...(nextOffset !== undefined && { nextOffset }),
       queryId,
       querySpecies: input.species,
       queryType: input.type,
@@ -337,9 +349,14 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
     const foundLabel =
       result.totalCount > shown ? `${shown} of ${result.totalCount}` : `${result.totalCount}`;
     lines.push(`**Type:** ${escapeMarkdownInline(result.queryType)} | **Found:** ${foundLabel}\n`);
+    if (result.nextOffset !== undefined) lines.push(`**Next offset:** ${result.nextOffset}\n`);
 
     if (result.homologs.length === 0) {
-      lines.push('No homologs found.');
+      lines.push(
+        result.totalCount === 0
+          ? 'No homologs found.'
+          : `No homologs on this page — ${result.totalCount} homologs match in total.`,
+      );
       return [{ type: 'text', text: lines.join('\n') }];
     }
 
@@ -350,8 +367,8 @@ export const ensemblGetHomology = tool('ensembl_get_homology', {
         lines.push(`**Protein ID:** ${escapeMarkdownInline(h.targetProteinId)}`);
       if (h.targetSpecies) lines.push(`**Species:** ${escapeMarkdownInline(h.targetSpecies)}`);
       if (h.type) lines.push(`**Homology type:** ${escapeMarkdownInline(h.type)}`);
-      if (h.percId != null) lines.push(`**Percent identity:** ${h.percId.toFixed(1)}%`);
-      if (h.percPos != null) lines.push(`**Percent positives:** ${h.percPos.toFixed(1)}%`);
+      if (h.percId != null) lines.push(`**Percent identity:** ${h.percId}%`);
+      if (h.percPos != null) lines.push(`**Percent positives:** ${h.percPos}%`);
       if (h.taxonomyLevel)
         lines.push(`**Last common ancestor:** ${escapeMarkdownInline(h.taxonomyLevel)}`);
       lines.push('');

@@ -194,7 +194,7 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       .describe(
         'Batch submission: up to 1,000 Ensembl stable IDs (ENSG…, ENST…); resolves the first 20 distinct trimmed queries. ' +
           'batch.omitted names the remainder to resubmit. A version suffix on an ENS… ' +
-          'ID is dropped before the lookup. Returns a succeeded/failed/omitted partition; each attempted item carries ' +
+          'or LRG ID is dropped before the lookup. Returns a succeeded/failed/omitted partition; each attempted item carries ' +
           'its query — the ID as submitted, version included — and each failed item a reason and ' +
           'recovery. Provide exactly one of symbol, id, ids, or symbols.',
       ),
@@ -261,7 +261,7 @@ export const ensemblLookupGene = tool('ensembl_lookup_gene', {
       recovery:
         'Verify the symbol spelling or ID format. Confirm the species name with ensembl_list_species ' +
         'and nameContains (a genus or common name), then retry. A version suffix is already dropped ' +
-        'from an ENS… ID, so an ID still not found is mistyped or retired.',
+        'from an ENS… or LRG ID, so an ID still not found is mistyped or retired.',
     },
     {
       reason: 'invalid_species',

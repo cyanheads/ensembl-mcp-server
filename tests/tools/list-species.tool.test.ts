@@ -150,7 +150,7 @@ describe('ensemblListSpecies zero-match surface', () => {
   });
 
   it.each<[{ division?: 'EnsemblPlants' }, string]>([
-    // Unfiltered pages hold 50 species, so browsing without nameContains is no route to one.
+    // Unfiltered pages hold 25 species, so browsing without nameContains is no route to one.
     [{}, 'set division: without it only vertebrates are searched'],
     [{ division: 'EnsemblPlants' }, 'in EnsemblPlants. Try a shorter fragment'],
   ])('steers a zero match to a shorter fragment or a division (%o)', async (extra, expected) => {
@@ -202,23 +202,35 @@ describe('ensemblListSpecies annotations', () => {
 describe('ensemblListSpecies cap and offset paging (issue #3)', () => {
   const sixty = makeSpecies(60);
 
-  it('caps an unfiltered call at 50 by default and discloses the remainder on both surfaces', async () => {
+  it('caps an unfiltered call at 25 by default and discloses the remainder on both surfaces', async () => {
     mockListSpecies.mockResolvedValueOnce(scrambled(sixty));
     const result = await runToolContract(ensemblListSpecies, {});
     expect(result.isError).toBeUndefined();
     const sc = result.structuredContent as PageSc;
-    expect(sc.species.map((s) => s.name)).toEqual(sixty.slice(0, 50).map((s) => s.name));
+    expect(sc.species.map((s) => s.name)).toEqual(sixty.slice(0, 25).map((s) => s.name));
     expect(sc.totalCount).toBe(60);
     expect(sc.truncated).toBe(true);
-    expect(sc.shown).toBe(50);
-    expect(sc.cap).toBe(50);
-    expect(sc.nextOffset).toBe(50);
+    expect(sc.shown).toBe(25);
+    expect(sc.cap).toBe(25);
+    expect(sc.nextOffset).toBe(25);
     expect(sc.notice).toContain('nextOffset');
-    expect(sc.notice).toContain('offset 50');
+    expect(sc.notice).toContain('offset 25');
     const text = textOf(result);
-    expect(text).toContain('50 of 60');
-    expect(text).toContain('Next offset:** 50');
-    expect(text).toContain('offset 50');
+    expect(text).toContain('25 of 60');
+    expect(text).toContain('Next offset:** 25');
+    expect(text).toContain('offset 25');
+  });
+
+  it('states the default of 25 on the tool and the max_results descriptions', () => {
+    expect(ensemblListSpecies.input.parse({}).max_results).toBe(25);
+    expect(ensemblListSpecies.description).toContain('(default 25)');
+    expect(ensemblListSpecies.input.shape.max_results.description).toContain('Default 25.');
+    for (const text of [
+      ensemblListSpecies.description,
+      ensemblListSpecies.input.shape.max_results.description ?? '',
+    ]) {
+      expect(text).not.toContain('50');
+    }
   });
 
   it('returns every matching species when max_results is 0', async () => {
@@ -305,10 +317,10 @@ describe('ensemblListSpecies cap and offset paging (issue #3)', () => {
     const sc = result.structuredContent as PageSc;
     expect(mockListSpecies).toHaveBeenLastCalledWith('EnsemblFungi', expect.anything());
     expect(sc.totalCount).toBe(132);
-    expect(sc.species).toHaveLength(50);
+    expect(sc.species).toHaveLength(25);
     expect(sc.species.every((s) => s.name.startsWith('saccharomyces_'))).toBe(true);
     expect(sc.species[0]!.name).toBe('saccharomyces_001');
-    expect(sc.nextOffset).toBe(50);
+    expect(sc.nextOffset).toBe(25);
   });
 
   it.each([{ offset: -1 }, { max_results: -1 }, { offset: 1.5 }, { max_results: 2.5 }])(

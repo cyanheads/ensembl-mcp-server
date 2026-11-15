@@ -134,7 +134,7 @@ describe('tool wire contract — error envelope', () => {
 });
 
 describe('tool wire contract — species guidance', () => {
-  // ensembl_list_species returns 50 species a page, so "call ensembl_list_species" alone
+  // ensembl_list_species returns 25 species a page, so "call ensembl_list_species" alone
   // lands on a first page that may not hold the species (homo_sapiens is past it).
   const tools = [
     ensemblGetHomology,
@@ -325,10 +325,8 @@ describe('tool wire contract — nested success payload', () => {
     expect(text).toContain('missense_variant');
     expect(text).toContain('ENST00000335295');
     expect(text).toContain('ENSP00000333994.3:p.Glu7Val');
-    expect(text).toContain('deleterious');
-    expect(text).toContain('0.020');
-    expect(text).toContain('possibly_damaging');
-    expect(text).toContain('0.860');
+    expect(text).toContain('deleterious (score: 0.02)');
+    expect(text).toContain('possibly_damaging (score: 0.86)');
     expect(text).toContain('pathogenic, drug-response');
     expect(text).toContain('PubMed: 1, 2, 3, 4, 5');
     expect(text).toContain('ENST00000633227');

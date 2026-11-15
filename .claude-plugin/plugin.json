@@ -22,12 +22,21 @@
     "mcp-server",
     "model-context-protocol"
   ],
+  "userConfig": {
+    "clamp_limits": {
+      "type": "boolean",
+      "title": "Clamp oversized page requests",
+      "description": "Clamp an ensembl_query_region max_results above 5,000 to 5,000 with a notice. Turn off to reject larger values instead.",
+      "default": true
+    }
+  },
   "mcpServers": {
     "ensembl-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/ensembl-mcp-server"],
       "env": {
-        "MCP_TRANSPORT_TYPE": "stdio"
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "ENSEMBL_CLAMP_LIMITS": "${user_config.clamp_limits}"
       }
     }
   }

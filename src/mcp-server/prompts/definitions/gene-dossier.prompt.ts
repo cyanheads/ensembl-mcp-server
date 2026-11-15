@@ -55,9 +55,10 @@ export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
           `3. **Find variants in the locus** — call \`ensembl_query_region\` with ` +
           `species="${args.species}", the gene's chromosomal region (chr:start-end from step 1), ` +
           `and feature=["variation"]. A gene locus can hold tens of thousands of variants, so the ` +
-          `response returns the first 100 (max_results) while totalCount reports the full count — ` +
-          `record totalCount as the locus variant count. To see other variants, query a narrower ` +
-          `window (e.g. one exon's coordinates) or raise max_results. Record the variant IDs (rsIDs), ` +
+          `response returns them 25 at a time (max_results) while totalCount reports the full count — ` +
+          `record totalCount as the locus variant count. To see other variants, pass nextOffset as ` +
+          `offset for the next page, raise max_results (at most 5,000 per page), or query a narrower ` +
+          `window (e.g. one exon's coordinates). Record the variant IDs (rsIDs), ` +
           `positions, consequence type, and any clinical significance of the returned variants. ` +
           `Functional impact (HIGH/MODERATE/LOW) is not reported by this step — it comes from VEP ` +
           `in step 4.\n\n` +
@@ -70,7 +71,7 @@ export const ensemblGeneDossierPrompt = prompt('ensembl_gene_dossier', {
           `5. **Find model-organism orthologs** — call \`ensembl_get_homology\` three times, with ` +
           `symbol="${args.gene_symbol}", species="${args.species}", type="orthologues", and ` +
           `target_species set to each of ${orthologTargets(args.species)} in turn. Without target_species the ` +
-          `tool returns one capped page in Ensembl's order, which can leave out all three. For every ` +
+          `tool returns one 25-homolog page in Ensembl's order, which can leave out all three. For every ` +
           `returned row, record type, targetId, targetSymbol and targetProteinId when present, and ` +
           `percId; if totalCount exceeds the rows shown, repeat that call with max_results=0. ` +
           `When type is ortholog_one2many or ortholog_many2many, the gene has several orthologs in ` +

@@ -60,10 +60,7 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
       .trim()
       .min(1)
       .describe(
-        'Ensembl stable gene (ENSG…), transcript (ENST…), or translation (ENSP…) ID. A version suffix on an ENS… ID ' +
-          '(ENSG00000139618.17) is dropped before the request. ' +
-          'Use ensembl_lookup_gene to get the stable ID from a gene symbol. ' +
-          'References default to this object level; all_levels=true includes child objects.',
+        'Ensembl stable gene (ENSG…), transcript (ENST…), or translation (ENSP…) ID. A version suffix on an ENS… or LRG ID (ENSG00000139618.17, LRG_1t1.1) is dropped before the request. Use ensembl_lookup_gene to get the stable ID from a gene symbol. References default to this object level; all_levels=true includes child objects.',
       ),
     dbname: z
       .string()
@@ -106,18 +103,17 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
       code: JsonRpcErrorCode.NotFound,
       when: 'The Ensembl stable ID was not found. An empty cross-reference list remains successful.',
       recovery:
-        'Use ensembl_lookup_gene to verify the stable ID is current and valid. ' +
-        'A version suffix is already dropped from an ENS… ID, so an ID still not found is ' +
-        'mistyped or retired.',
+        'Use ensembl_lookup_gene to verify the stable ID is current and valid. A version suffix is already dropped from an ENS… or LRG ID, so an ID still not found is mistyped or retired.',
     },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('Getting xrefs', { id: input.id, dbname: input.dbname });
     const service = getEnsemblService();
+    const dbname = input.dbname?.trim() || undefined;
 
     const xrefs = await service
-      .getXrefsById(input.id.trim(), input.dbname?.trim() || undefined, ctx, input.all_levels)
+      .getXrefsById(input.id.trim(), dbname, ctx, input.all_levels)
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         if (/not found/i.test(msg)) {
@@ -127,13 +123,12 @@ export const ensemblGetXrefs = tool('ensembl_get_xrefs', {
       });
 
     if (xrefs.length === 0) {
-      const filterNote = input.dbname ? ` with dbname filter "${input.dbname}"` : '';
+      // Name the dbname filter only when the request carried one.
+      const remedy = input.all_levels
+        ? `Try a more specific feature ID${dbname ? ' or remove the dbname filter within this scope' : ''}.`
+        : `Try all_levels=true to include child-object references, or a more specific feature ID.${dbname ? ' Remove the dbname filter to see other databases within this scope.' : ''}`;
       ctx.enrich.notice(
-        `No cross-references found for ${input.id}${filterNote}. ` +
-          (input.all_levels
-            ? 'Try a more specific feature ID or remove the dbname filter within this scope.'
-            : 'Try all_levels=true to include child-object references, or a more specific feature ID. ' +
-              'Remove the dbname filter to see other databases within this scope.'),
+        `No cross-references found for ${input.id}${dbname ? ` with dbname filter "${dbname}"` : ''}. ${remedy}`,
       );
     }
     ctx.enrich.total(xrefs.length);

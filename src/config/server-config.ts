@@ -13,15 +13,33 @@ const ServerConfigSchema = z.object({
     .describe(
       'Ensembl REST API base URL. Override to point at the GRCh37 legacy endpoint (https://grch37.rest.ensembl.org) or a local mirror.',
     ),
+  clampLimits: z
+    .stringbool()
+    .default(true)
+    .describe(
+      'Clamp a count input above its per-call cap to the cap, with a notice. Set false to advertise the cap as the schema maximum and reject larger values instead.',
+    ),
 });
 
-let _config: z.infer<typeof ServerConfigSchema> | undefined;
+export type ServerConfig = z.infer<typeof ServerConfigSchema>;
 
-export function getServerConfig() {
-  _config ??= parseEnvConfig(ServerConfigSchema, {
+let _config: ServerConfig | undefined;
+
+/**
+ * Parses the server's env vars and replaces the cached config. `setup()` calls it
+ * once the framework has loaded `.env`: `tool()` emits each input schema at import,
+ * and the `max_results` maximum getter reads this config, so the first read can
+ * predate `.env`. Throws `ConfigurationError` naming the variable on a bad value.
+ */
+export function loadServerConfig(): ServerConfig {
+  _config = parseEnvConfig(ServerConfigSchema, {
     baseUrl: 'ENSEMBL_BASE_URL',
+    clampLimits: 'ENSEMBL_CLAMP_LIMITS',
   });
   return _config;
 }
 
-export type ServerConfig = z.infer<typeof ServerConfigSchema>;
+/** The loaded server config, parsed from the environment on first read. */
+export function getServerConfig(): ServerConfig {
+  return _config ?? loadServerConfig();
+}

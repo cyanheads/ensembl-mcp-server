@@ -4,7 +4,7 @@ description: Gates and identifier chains for the ensembl_* tools. Covers checkin
 license: Apache-2.0
 metadata:
   author: cyanheads
-  version: "1.1"
+  version: "1.2"
 ---
 
 ## Scope
@@ -34,7 +34,7 @@ Not here: population allele frequencies (colocated VEP records carry IDs, clinic
 
 **Find a gene's counterpart in another species with ensembl_get_homology, not by looking up the human symbol there.** A symbol lookup in another species only matches names. Human TP53 in mouse resolves to Trp53 through a synonym. Human SOX9 in zebrafish returns `not_found`, although zebrafish has two SOX9 orthologs.
 
-**Set `target_species` once for each organism you care about.** Without it, ensembl_get_homology returns one capped page in Ensembl's order, which starts with primates. Human TP53's mouse and zebrafish orthologs both fall outside the default page. `totalCount` is the full match count; compare it with the rows shown.
+**Set `target_species` once for each organism you care about.** Without it, ensembl_get_homology returns one page in Ensembl's order, which starts with the closest relatives (primates for human). Human TP53's mouse and zebrafish orthologs both fall outside the default page. `totalCount` is the full match count; compare it with the rows shown, and continue with `nextOffset` as `offset` (or `max_results: 0` for every remaining homolog) when you need the rest.
 
 **Read the homology `type` before you name "the ortholog".** `ortholog_one2many` and `ortholog_many2many` mean the relationship is not 1:1. Report every row for the target species, ranked by `percId` if you need an order. For example, human SOX9 maps to two zebrafish genes, both `one2many`.
 
@@ -42,7 +42,7 @@ Not here: population allele frequencies (colocated VEP records carry IDs, clinic
 
 **Set the species to match a non-human gene ID in ensembl_get_homology.** That tool defaults the species to `homo_sapiens` even when you pass an ID. A mouse `ENSMUSG…` ID with the default species fails as `not_found … in homo_sapiens`. Every other tool infers the species from the ID.
 
-**Filter VEP results to the allele you mean.** One rsID can carry several alternate alleles. rs334 is `T/A/C/G`, and each allele gets its own transcript consequences. Every consequence names its `variantAllele`, and `mostSevereConsequence` covers all the alleles together. Filter to the allele in question before you report a consequence, an HGVS string, or a SIFT/PolyPhen score.
+**Filter VEP results to the allele you mean.** One rsID can carry several alternate alleles. rs334 is `T/A/C/G`, and each allele gets its own transcript consequences. Every consequence names its `variantAllele`, and `mostSevereConsequence` covers all the alleles together. Filter to the allele in question before you report a consequence, an HGVS string, or a SIFT/PolyPhen score. Alleles read on the strand of the record or colocated variant that carries them: each reports `strand`, and a transcript HGVS on a reverse-strand gene reports `-1` while region input reports `1`. Reverse-complement one side before you match a `variantAllele` or `alleleString` against a colocated `alleleString` or `clinicalSignificanceByAllele` key when the strands differ (the notice says so).
 
 **Confirm the canonical consequence made it past the cap.** The cap on transcript consequences keeps Ensembl's order: by transcript ID, with alleles interleaved, not canonical-first. For a large gene such as TTN, the canonical transcript can sit well past the default cap of 10. A multi-allelic rsID fills the cap with fewer transcripts. Before you report the consequence on the canonical transcript, find a returned row for your gene (`geneId` or `geneSymbol`) with `canonical` or `maneSelect` set; other genes overlapping the same variant carry canonical transcripts of their own. If there isn't one, call again with the cap at 0.
 

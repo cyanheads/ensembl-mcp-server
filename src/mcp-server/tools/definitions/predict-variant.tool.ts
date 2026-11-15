@@ -13,11 +13,35 @@ import type { VepRecord } from '@/services/ensembl/types.js';
 /** Ensembl's rejection of a species it does not know, on every VEP endpoint. */
 const UNKNOWN_SPECIES = /can not find internal name for species/i;
 
+const COMPLEMENT = { A: 'T', C: 'G', G: 'C', T: 'A' } as const;
+
+/**
+ * The forward-strand spelling of a reverse-strand region allele: each `/`-separated
+ * nucleotide allele (either case) is reverse-complemented and returned uppercase, since
+ * Ensembl reads `A/G` as alleles too; `-`, structural-variant terms (DUP, DEL, INS, …), and
+ * anything else pass unchanged for Ensembl to validate.
+ */
+function forwardAllele(allele: string): string {
+  return allele
+    .split('/')
+    .map((part) =>
+      /^[ACGT]+$/i.test(part)
+        ? [...part.toUpperCase()]
+            .reverse()
+            .map((base) => COMPLEMENT[base as keyof typeof COMPLEMENT])
+            .join('')
+        : part,
+    )
+    .join('/');
+}
+
 const TranscriptConsequenceSchema = z.object({
   variantAllele: z
     .string()
     .optional()
-    .describe('Allele this transcript consequence describes, in the upstream genomic orientation.'),
+    .describe(
+      "Allele this transcript consequence describes, on the record's strand whatever this transcript's own strand. When that strand differs from a colocated variant's, reverse-complement before matching it to the colocated alleleString or clinicalSignificanceByAllele keys.",
+    ),
   canonical: z
     .boolean()
     .optional()
@@ -86,7 +110,15 @@ const ColocatedVariantSchema = z.object({
   alleleString: z
     .string()
     .optional()
-    .describe('Allele string showing reference/alternate (e.g. A/T).'),
+    .describe(
+      'Reference/alternate alleles of this known variant (e.g. T/A/C/G), on its own strand.',
+    ),
+  strand: z
+    .number()
+    .optional()
+    .describe(
+      'Strand this colocated variant reports its alleleString and clinicalSignificanceByAllele keys on: 1 forward, -1 reverse. Omitted when Ensembl reports none.',
+    ),
   clinicalSignificance: z
     .array(z.string().describe('A clinical significance term for this colocated known variant.'))
     .optional()
@@ -97,7 +129,7 @@ const ColocatedVariantSchema = z.object({
     .record(z.string(), z.array(z.string()))
     .optional()
     .describe(
-      'Clinical significance terms keyed by the allele explicitly annotated in the colocated record. Missing alleles have no reported attribution.',
+      'Clinical significance terms keyed by the allele explicitly annotated in the colocated record, on its own strand; a deletion allele is keyed "-". Missing alleles have no reported attribution.',
     ),
   clinicalSignificanceReferenceAllele: z
     .string()
@@ -123,7 +155,15 @@ const VepResultSchema = z.object({
   alleleString: z
     .string()
     .optional()
-    .describe('Reference and alternate alleles returned by VEP, separated by slashes.'),
+    .describe(
+      "Reference and alternate alleles returned by VEP, separated by slashes, on the record's strand.",
+    ),
+  strand: z
+    .number()
+    .optional()
+    .describe(
+      'Strand this record reports its alleleString and every variantAllele on: 1 forward, -1 reverse. A transcript or protein HGVS input on a reverse-strand transcript reports -1; region+allele input reports 1. Omitted when Ensembl reports none.',
+    ),
   input: z.string().optional().describe('The input variant notation as submitted to VEP.'),
   chromosome: z.string().optional().describe('Chromosome the variant is on.'),
   start: z.number().optional().describe('Variant start position (1-based).'),
@@ -169,18 +209,7 @@ const VepResultSchema = z.object({
 export const ensemblPredictVariant = tool('ensembl_predict_variant', {
   title: 'Predict Variant Effect',
   description:
-    'Predict the functional consequences of a sequence variant using the Ensembl Variant Effect Predictor (VEP). ' +
-    'Accepts three input formats: HGVS notation (transcript-relative, e.g. ENST00000380152.8:c.2T>A, ' +
-    'or genomic, e.g. 13:g.32316462T>A); region+allele (chr:start:end:strand/allele, e.g. 1:65568:65568:1/T); ' +
-    'and a dbSNP rsID (e.g. rs334). Returns the most severe consequence term, affected transcripts and genes, ' +
-    'impact level (HIGH/MODERATE/LOW/MODIFIER), and any colocated known variants with clinical significance. ' +
-    'HGVS input: provide the full notation including transcript version for best results. ' +
-    'Region+allele input: Ensembl normalizes chromosome names and canonical vertebrate output omits the chr ' +
-    'prefix (a chr-prefixed name is also accepted). ' +
-    'By default the response caps transcript consequences (max_transcript_consequences) and per-variant ' +
-    'PubMed IDs (max_pubmed_ids_per_variant) to keep large VEP results compact — well-studied variants ' +
-    'like rs334 otherwise carry 60+ consequences and 100+ citations. Truthful totals are always reported; ' +
-    'set a cap to 0 (or include_all_colocated_pubmed=true) to retrieve the full set.',
+    'Predict the functional consequences of a sequence variant using the Ensembl Variant Effect Predictor (VEP). Accepts three input formats: HGVS notation (transcript-relative, e.g. ENST00000380152.8:c.2T>A, or genomic, e.g. 13:g.32316462T>A); region+allele (chr:start:end:strand/allele, e.g. 1:65568:65568:1/T); and a dbSNP rsID (e.g. rs334). Returns the most severe consequence term, affected transcripts and genes, impact level (HIGH/MODERATE/LOW/MODIFIER), and any colocated known variants with clinical significance. HGVS input: provide the full notation including transcript version for best results. Region+allele input: Ensembl normalizes chromosome names and canonical vertebrate output omits the chr prefix (a chr-prefixed name is also accepted); a reverse-strand (-1) allele is reverse-complemented and sent on the forward strand. Each record and colocated variant reports the strand its alleles read on, which can differ (transcript or protein HGVS on a reverse-strand gene reports -1). By default the response caps transcript consequences (max_transcript_consequences) and per-variant PubMed IDs (max_pubmed_ids_per_variant) to keep large VEP results compact — well-studied variants like rs334 otherwise carry 60+ consequences and 100+ citations. Truthful totals are always reported; set a cap to 0 (or include_all_colocated_pubmed=true) to retrieve the full set.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     variant: z
@@ -188,14 +217,7 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
       .trim()
       .min(1)
       .describe(
-        'Variant in one of three formats: ' +
-          '(1) HGVS notation — transcript-relative: ENST00000380152.8:c.2T>A; ' +
-          'genomic: 13:g.32316462T>A; ' +
-          '(2) Region+allele: chr:start:end:strand/allele — e.g. 1:65568:65568:1/T ' +
-          '(strand is 1 for forward or -1 for reverse); ' +
-          '(3) dbSNP rsID — e.g. rs334. ' +
-          'Ensembl normalizes chromosome names; canonical vertebrate output omits the "chr" prefix, ' +
-          'though a chr-prefixed name is also accepted.',
+        'Variant in one of three formats: (1) HGVS notation — transcript-relative: ENST00000380152.8:c.2T>A; genomic: 13:g.32316462T>A; (2) Region+allele: chr:start:end:strand/allele — e.g. 1:65568:65568:1/T (strand is 1 for forward or -1 for reverse; a -1 allele is read on the reverse strand, reverse-complemented, and sent as its forward-strand equivalent, while "-" and structural-variant terms such as DUP pass unchanged); (3) dbSNP rsID — e.g. rs334. Ensembl normalizes chromosome names; canonical vertebrate output omits the "chr" prefix, though a chr-prefixed name is also accepted.',
       ),
     species: z
       .string()
@@ -255,7 +277,9 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
     notice: z
       .string()
       .optional()
-      .describe('Guidance when no results are returned or when caps omitted detail.'),
+      .describe(
+        'Guidance when a reverse-strand region input was sent on the forward strand, when no results are returned, when a record and its colocated variants report different strands, or when caps omitted detail.',
+      ),
     truncated: z
       .boolean()
       .optional()
@@ -316,6 +340,8 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
       }
     };
 
+    // ctx.enrich.notice is last-wins: every fragment collects here and lands as ONE notice.
+    const notices: string[] = [];
     let results: VepRecord[];
     if (regionMatch) {
       const [, chr, start, end, strand, allele] = regionMatch as [
@@ -326,16 +352,22 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
         string,
         string,
       ];
+      /*
+       * GET /vep/{species}/region reads a -1 request's reference on the minus strand but
+       * scores its allele as a forward-strand base, so a reverse-strand input goes out as
+       * its forward-strand equivalent. (POST applies -1 as documented, but answers a
+       * reference-matching allele with HTTP 200 and consequence "?".)
+       */
+      const reverse = strand === '-1';
+      const sentAllele = reverse ? forwardAllele(allele) : allele;
+      const sent = `${chr}:${start}:${end}:1/${sentAllele}`;
+      if (reverse) {
+        notices.push(
+          `Converted the reverse-strand input to the forward strand before calling Ensembl: sent ${sent} for ${input.variant}. Response alleles read on the forward strand.`,
+        );
+      }
       results = await service
-        .predictVariantRegion(
-          chr,
-          Number(start),
-          Number(end),
-          Number(strand),
-          allele,
-          input.species,
-          ctx,
-        )
+        .predictVariantRegion(chr, Number(start), Number(end), 1, sentAllele, input.species, ctx)
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           failOnUnknownSpecies(msg);
@@ -343,7 +375,7 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
           if (/invalid|unrecognized|parse|malformed|matches reference|allele must be/i.test(msg)) {
             throw ctx.fail(
               'invalid_notation',
-              `Invalid region+allele notation "${input.variant}": ${msg}`,
+              `Invalid region+allele notation "${input.variant}"${reverse ? ` (sent as ${sent})` : ''}: ${msg}`,
             );
           }
           if (/not found|outside|no slice found/i.test(msg)) {
@@ -418,39 +450,60 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
     });
 
     if (shaped.length === 0) {
-      ctx.enrich.notice(
-        `No VEP results for "${input.variant}". ` +
-          'Verify the notation format and that the position falls within an annotated region.',
+      notices.push(
+        `No VEP results for "${input.variant}". Verify the notation format and that the position falls within an annotated region.`,
       );
-    } else {
-      // Both caps can trip on one call (rs334: 66 consequences and 100+ PubMed IDs).
-      // ctx.enrich.notice is last-wins, so compose the omission fragments into ONE string.
-      const fragments: string[] = [];
-      const consequencesOmitted = consequencesTotal - consequencesShown;
-      if (consequencesOmitted > 0) {
-        fragments.push(
-          `showing ${consequencesShown} of ${consequencesTotal} transcript consequences`,
-        );
-      }
-      if (pubmedCapped) {
-        fragments.push(
-          `capped PubMed IDs to ${input.max_pubmed_ids_per_variant} per colocated variant`,
-        );
-      }
-      if (fragments.length > 0) {
-        const guidance =
-          `${fragments.join('; ')}. Raise max_transcript_consequences (0 returns all) ` +
-          'or set include_all_colocated_pubmed=true for the full detail.';
-        if (consequencesOmitted > 0) {
-          ctx.enrich.truncated({
-            shown: consequencesShown,
-            cap: input.max_transcript_consequences,
-            guidance,
-          });
-        } else {
-          ctx.enrich.notice(guidance);
-        }
-      }
+    }
+
+    // Alleles pass through as reported, each on its own strand; say so where two disagree.
+    const strandMismatches = results.flatMap((r, i) => {
+      if (r.strand === undefined) return [];
+      const differing = r.colocatedVariants.filter(
+        (cv) => cv.strand !== undefined && cv.strand !== r.strand,
+      );
+      if (differing.length === 0) return [];
+      const colocated = [...Map.groupBy(differing, (cv) => cv.strand)]
+        .map(
+          ([cvStrand, cvs]) =>
+            `${cvs.map((cv) => cv.id ?? 'an unnamed variant').join(', ')} (strand ${cvStrand})`,
+        )
+        .join(', ');
+      return [`${r.input ?? `record ${i + 1}`} (strand ${r.strand}) vs colocated ${colocated}`];
+    });
+    if (strandMismatches.length > 0) {
+      notices.push(
+        `Strands differ: ${strandMismatches.join('; ')}. Reverse-complement one side before matching variantAllele or alleleString against a colocated alleleString or clinicalSignificanceByAllele key.`,
+      );
+    }
+
+    // Both caps can trip on one call (rs334: 66 consequences and 100+ PubMed IDs).
+    const capFragments: string[] = [];
+    const consequencesOmitted = consequencesTotal - consequencesShown;
+    if (consequencesOmitted > 0) {
+      capFragments.push(
+        `Showing ${consequencesShown} of ${consequencesTotal} transcript consequences`,
+      );
+    }
+    if (pubmedCapped) {
+      capFragments.push(
+        `${capFragments.length > 0 ? 'capped' : 'Capped'} PubMed IDs to ${input.max_pubmed_ids_per_variant} per colocated variant`,
+      );
+    }
+    if (capFragments.length > 0) {
+      notices.push(
+        `${capFragments.join('; ')}. Raise max_transcript_consequences (0 returns all) or set include_all_colocated_pubmed=true for the full detail.`,
+      );
+    }
+
+    const notice = notices.join(' ');
+    if (consequencesOmitted > 0) {
+      ctx.enrich.truncated({
+        shown: consequencesShown,
+        cap: input.max_transcript_consequences,
+        guidance: notice,
+      });
+    } else if (notice) {
+      ctx.enrich.notice(notice);
     }
     ctx.enrich.total(shaped.length);
 
@@ -470,6 +523,7 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
     for (const r of result.results) {
       lines.push(`\n${renderHeading(3, `Variant: ${r.input ?? 'unknown'}`)}`);
       if (r.alleleString) lines.push(`**Alleles:** ${escapeMarkdownInline(r.alleleString)}`);
+      if (r.strand !== undefined) lines.push(`**Strand:** ${r.strand}`);
       if (r.chromosome && r.start != null) {
         lines.push(
           `**Location:** ${escapeMarkdownInline(r.chromosome)}:${r.start}${r.end !== r.start ? `-${r.end}` : ''}${r.assemblyName ? ` [${escapeMarkdownInline(r.assemblyName)}]` : ''}`,
@@ -483,7 +537,10 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
         lines.push(`\n**Known colocated variants:**`);
         for (const cv of r.colocatedVariants) {
           let cvLine = `- ${escapeMarkdownInline(cv.id ?? 'novel')}`;
-          if (cv.alleleString) cvLine += ` (${escapeMarkdownInline(cv.alleleString)})`;
+          const cvAlleles: string[] = [];
+          if (cv.alleleString) cvAlleles.push(escapeMarkdownInline(cv.alleleString));
+          if (cv.strand !== undefined) cvAlleles.push(`strand ${cv.strand}`);
+          if (cvAlleles.length > 0) cvLine += ` (${cvAlleles.join(', ')})`;
           if (cv.clinicalSignificance?.length) {
             cvLine += ` — aggregate clinical significance: ${escapeMarkdownInline(cv.clinicalSignificance.join(', '))}`;
           }
@@ -526,12 +583,12 @@ export const ensemblPredictVariant = tool('ensembl_predict_variant', {
           if (tc.aminoAcids) lines.push(`**Amino acids:** ${escapeMarkdownInline(tc.aminoAcids)}`);
           if (tc.sift) {
             lines.push(
-              `**SIFT:** ${escapeMarkdownInline(tc.sift.prediction)} (score: ${tc.sift.score.toFixed(3)})`,
+              `**SIFT:** ${escapeMarkdownInline(tc.sift.prediction)} (score: ${tc.sift.score})`,
             );
           }
           if (tc.polyphen) {
             lines.push(
-              `**PolyPhen:** ${escapeMarkdownInline(tc.polyphen.prediction)} (score: ${tc.polyphen.score.toFixed(3)})`,
+              `**PolyPhen:** ${escapeMarkdownInline(tc.polyphen.prediction)} (score: ${tc.polyphen.score})`,
             );
           }
         }

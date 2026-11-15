@@ -24,10 +24,12 @@ import type {
   HomologyEntry,
   HomologyResult,
   MitochondrionAliasCheck,
+  OtherObject,
   OverlapFeature,
   RawAssemblyInfo,
   RawGeneRecord,
   RawHomologyResponse,
+  RawLookupObject,
   RawOverlapFeature,
   RawRegionInfo,
   RawSequenceRecord,
@@ -81,8 +83,25 @@ const NO_SLICE = /^No slice found for location/i;
  */
 const GENOMEDB_MISS = "Could not find a GenomeDB named '";
 
+/**
+ * Ensembl's refusal of `/lookup/id?expand=1` for a Translation or Exon, sent before any record:
+ * the type is learned from the unexpanded record. Matched as a prefix, as Ensembl words it.
+ */
+const EXPAND_REFUSED = 'Expand option only available for Genes and Transcripts';
+
 /** The species Ensembl's pan-taxonomic comparison holds, across every division. */
 const PAN_HOMOLOGY_SPECIES_PATH = '/info/compara/species_sets/PROTEIN_TREES?compara=pan_homology';
+
+/**
+ * Homolog name lookup through `POST /lookup/id`. Ensembl's answer time grows with the species
+ * a request spans: 25 HBB orthologue IDs across 21 species took 2.6-9.9 s in one request and
+ * 1.6 s as five 5-ID requests in parallel; 25 human IDs took 0.4 s. Three requests at a time
+ * stay under Ensembl's 15 requests per second even at the fastest 5-ID answer measured (223 ms).
+ */
+const SYMBOL_LOOKUP_CHUNK = 5;
+const SYMBOL_LOOKUP_CONCURRENCY = 3;
+/** One budget across every name request of a call, inside its remaining call deadline. */
+const SYMBOL_LOOKUP_BUDGET_MS = 10_000;
 
 /**
  * Waits on a load other calls may share, for one call: the load's answer, or a rejection
@@ -120,16 +139,17 @@ function awaitShared<T>(load: Promise<T>, signal: AbortSignal, remainingMs: numb
 // --- Names ---
 
 /**
- * An Ensembl stable ID with a trailing version (ENSG00000139618.19). Ensembl's stable-ID
- * endpoints answer a versioned ID as not found, even its current version, and
- * `/homology/id` answers it with an empty list, so the version is dropped before every
- * stable-ID request. A non-Ensembl ID (AT3G52430.1, whose suffix is part of the ID) never
- * matches. Anchored, with the letter run, digit run, and suffix in disjoint classes, so
- * matching is linear in the input.
+ * An Ensembl stable ID with a trailing version (ENSG00000139618.19), or an LRG transcript or
+ * translation ID with one (LRG_1t1.1, LRG_1p1.1: an LRG gene's canonical_transcript carries
+ * it). Ensembl's stable-ID endpoints answer a versioned ID as not found, even its current
+ * version, and `/homology/id` answers it with an empty list, so the version is dropped before
+ * every stable-ID request. An ID whose suffix is part of the ID (AT3G52430.1) never matches.
+ * Anchored, each branch opening on its own literal, with every quantified run followed by a
+ * disjoint class, so matching is linear in the input.
  */
-const VERSIONED_STABLE_ID = /^(ENS[A-Z]*\d{11})\.\d+$/i;
+const VERSIONED_STABLE_ID = /^(ENS[A-Z]*\d{11}|LRG_\d+[tp]\d+)\.\d+$/i;
 
-/** The ID without its version when it is a versioned Ensembl stable ID; otherwise unchanged. */
+/** The ID without its version when it is a versioned stable ID; otherwise unchanged. */
 function unversioned(id: string): string {
   return id.replace(VERSIONED_STABLE_ID, '$1');
 }
@@ -273,6 +293,19 @@ function normalizeTranscript(raw: RawTranscriptRecord): TranscriptRecord {
   };
 }
 
+/**
+ * The record's type and parent when Ensembl names a type other than `expected`; undefined for
+ * the expected type and for a record that names none, which reads as the expected kind.
+ */
+function otherObject(raw: RawLookupObject, expected: string): OtherObject | undefined {
+  if (raw.object_type === undefined || raw.object_type === expected) return undefined;
+  return {
+    kind: 'other',
+    objectType: raw.object_type,
+    ...(raw.Parent && { parentId: raw.Parent }),
+  };
+}
+
 function normalizeSequence(raw: RawSequenceRecord, type: string): SequenceRecord {
   return {
     id: raw.id,
@@ -311,6 +344,7 @@ function normalizeOverlapFeature(raw: RawOverlapFeature): OverlapFeature {
 function normalizeVep(raw: RawVepRecord): VepRecord {
   return {
     ...(raw.allele_string && { alleleString: raw.allele_string }),
+    ...(typeof raw.strand === 'number' && { strand: raw.strand }),
     ...(raw.input && { input: raw.input }),
     ...(raw.seq_region_name && { chromosome: raw.seq_region_name }),
     ...(typeof raw.start === 'number' && { start: raw.start }),
@@ -340,9 +374,16 @@ function normalizeVep(raw: RawVepRecord): VepRecord {
         : tc.polyphen && { polyphen: tc.polyphen }),
     })),
     colocatedVariants: (raw.colocated_variants ?? []).map((cv) => {
+      /*
+       * Ensembl keys a deletion allele's terms with an empty allele (`:pathogenic` on
+       * rs63749819, `T/-`). Read the empty key as `-` only when the record lists `-`
+       * among its alleles; anywhere else it stays malformed and attributes nothing.
+       */
+      const emptyKey = cv.allele_string?.split('/').includes('-') ? '-' : '';
       const termsByAllele = new Map<string, string[]>();
       for (const segment of cv.clin_sig_allele?.split(';') ?? []) {
-        const [allele, term, ...extra] = segment.split(':').map((part) => part.trim());
+        const [annotated, term, ...extra] = segment.split(':').map((part) => part.trim());
+        const allele = annotated || emptyKey;
         if (!allele || !term || extra.length > 0) continue;
         const terms = termsByAllele.get(allele) ?? [];
         terms.push(term);
@@ -352,6 +393,7 @@ function normalizeVep(raw: RawVepRecord): VepRecord {
       return {
         ...(cv.id && { id: cv.id }),
         ...(cv.allele_string && { alleleString: cv.allele_string }),
+        ...(typeof cv.strand === 'number' && { strand: cv.strand }),
         ...(clinicalSignificance?.length && { clinicalSignificance }),
         ...(termsByAllele.size > 0 && {
           clinicalSignificanceByAllele: Object.fromEntries(termsByAllele),
@@ -606,6 +648,29 @@ export class EnsemblService {
   }
 
   /**
+   * The expanded gene record for a stable ID that names a gene, or what Ensembl holds under it
+   * instead. One request answers a gene or a transcript; Ensembl refuses to expand a translation
+   * or exon, and one unexpanded request then names its type (the refusal stands if it names
+   * none). `lookupGeneById` stays untyped: `ensembl_lookup_gene` serves every record type.
+   */
+  async lookupGeneOnly(
+    id: string,
+    ctx: Context,
+  ): Promise<{ kind: 'gene'; gene: GeneRecord } | OtherObject> {
+    const path = `/lookup/id/${encodeURIComponent(unversioned(id))}`;
+    let raw: RawGeneRecord;
+    try {
+      raw = await this.fetchWithRetry<RawGeneRecord>(`${path}?expand=1&mane=1`, ctx);
+    } catch (err) {
+      if (!(err instanceof McpError) || !err.message.startsWith(EXPAND_REFUSED)) throw err;
+      const other = otherObject(await this.fetchWithRetry<RawLookupObject>(path, ctx), 'Gene');
+      if (!other) throw err;
+      return other;
+    }
+    return otherObject(raw, 'Gene') ?? { kind: 'gene', gene: normalizeGene(raw) };
+  }
+
+  /**
    * One `POST /lookup/id` for every ID, each sent once and unversioned. The records are
    * keyed by the IDs as given, so inputs that differ only by version share a record;
    * an ID Ensembl does not hold is absent.
@@ -842,10 +907,21 @@ export class EnsemblService {
 
   // --- Transcript lookup ---
 
-  async lookupTranscript(id: string, ctx: Context): Promise<TranscriptRecord> {
+  /**
+   * The transcript record for a stable ID that names a transcript, or what Ensembl holds under
+   * it instead: `/lookup/id` answers gene, translation, and exon IDs too, and some IDs are
+   * shared across types (AT1G01010.1 names a transcript and its translation), so the record's
+   * `object_type` decides, never the ID's form.
+   */
+  async lookupTranscript(
+    id: string,
+    ctx: Context,
+  ): Promise<{ kind: 'transcript'; transcript: TranscriptRecord } | OtherObject> {
     const path = `/lookup/id/${encodeURIComponent(unversioned(id))}`;
     const raw = await this.fetchWithRetry<RawTranscriptRecord>(path, ctx);
-    return normalizeTranscript(raw);
+    return (
+      otherObject(raw, 'Transcript') ?? { kind: 'transcript', transcript: normalizeTranscript(raw) }
+    );
   }
 
   // --- Sequence ---
@@ -960,9 +1036,11 @@ export class EnsemblService {
   // --- Homology ---
 
   /**
-   * Best-effort names for returned homologs, sharing five seconds across all
-   * <=1,000-ID chunks and bounded by the original call's remaining deadline.
-   * Primary rows never depend on this lookup; only caller cancellation escapes.
+   * Best-effort names for returned homologs: {@link SYMBOL_LOOKUP_CHUNK} IDs a request,
+   * {@link SYMBOL_LOOKUP_CONCURRENCY} requests at a time, every request sharing one
+   * {@link SYMBOL_LOOKUP_BUDGET_MS} budget bounded by the original call's remaining deadline.
+   * A failed request starts no further one; names already answered are kept. Primary rows
+   * never depend on this lookup; only caller cancellation escapes.
    */
   async getHomologyTargetSymbols(ids: string[], ctx: Context): Promise<Map<string, string>> {
     ctx.signal.throwIfAborted();
@@ -970,28 +1048,48 @@ export class EnsemblService {
     const distinct = [...new Set(ids)];
     if (!distinct.length) return names;
     const callStart = this.callStarts.get(ctx) ?? Date.now();
-    const budget = Math.min(5000, callStart + ENSEMBL_CALL_DEADLINE_MS - Date.now());
+    const budget = Math.min(
+      SYMBOL_LOOKUP_BUDGET_MS,
+      callStart + ENSEMBL_CALL_DEADLINE_MS - Date.now(),
+    );
     if (budget <= 0) return names;
     try {
       await withRetry(
         async (attempt) => {
-          for (let offset = 0; offset < distinct.length; offset += 1000) {
-            attempt.signal.throwIfAborted();
-            const chunk = distinct.slice(offset, offset + 1000);
-            const raw = await this.fetchJson<Record<string, RawGeneRecord | null>>(
-              '/lookup/id',
-              ctx,
-              { method: 'POST', body: { ids: chunk } },
-              attempt,
-            );
-            attempt.signal.throwIfAborted();
-            for (const id of chunk) {
-              const record = Object.hasOwn(raw, id) ? raw[id] : null;
-              if (typeof record?.display_name === 'string' && record.display_name) {
-                names.set(id, record.display_name);
+          const pending = Array.from(
+            { length: Math.ceil(distinct.length / SYMBOL_LOOKUP_CHUNK) },
+            (_, i) => distinct.slice(i * SYMBOL_LOOKUP_CHUNK, (i + 1) * SYMBOL_LOOKUP_CHUNK),
+          );
+          const worker = async () => {
+            for (let chunk = pending.shift(); chunk !== undefined; chunk = pending.shift()) {
+              const raw = await this.fetchJson<Record<string, RawGeneRecord | null>>(
+                '/lookup/id',
+                ctx,
+                { method: 'POST', body: { ids: chunk } },
+                attempt,
+              );
+              attempt.signal.throwIfAborted();
+              for (const id of chunk) {
+                const record = Object.hasOwn(raw, id) ? raw[id] : null;
+                if (typeof record?.display_name === 'string' && record.display_name) {
+                  names.set(id, record.display_name);
+                }
               }
             }
-          }
+          };
+          // Every worker settles before the attempt does, so no request outlives the lookup.
+          const settled = await Promise.allSettled(
+            Array.from({ length: Math.min(SYMBOL_LOOKUP_CONCURRENCY, pending.length) }, () =>
+              worker().catch((err: unknown) => {
+                pending.length = 0;
+                throw err;
+              }),
+            ),
+          );
+          const failure = settled.find(
+            (result): result is PromiseRejectedResult => result.status === 'rejected',
+          );
+          if (failure) throw failure.reason;
         },
         {
           operation: 'Ensembl homology symbol enrichment',
@@ -1074,7 +1172,9 @@ export class EnsemblService {
    * comparison Ensembl runs for the source species answers a GenomeDB miss; when Ensembl's
    * pan-taxonomic comparison holds both species, the request is repeated there. Membership is
    * checked first because Ensembl crashes, rather than rejects, a pan request from a source
-   * outside it. A pair it cannot try fails as `target_not_compared`.
+   * outside it. A pair it cannot try fails as `target_not_compared`. Both requests send
+   * `sequence=none`: nothing reads the aligned sequences Ensembl otherwise sends per row
+   * (42% of the HBB orthologue body).
    */
   private async requestHomology(
     path: string,
@@ -1083,8 +1183,8 @@ export class EnsemblService {
     ctx: Context,
   ): Promise<{ raw: RawHomologyResponse; comparison?: 'pan_homology' }> {
     const query = targetSpecies
-      ? `${path}&target_species=${encodeURIComponent(targetSpecies)}`
-      : path;
+      ? `${path}&sequence=none&target_species=${encodeURIComponent(targetSpecies)}`
+      : `${path}&sequence=none`;
     try {
       return { raw: await this.fetchWithRetry<RawHomologyResponse>(query, ctx) };
     } catch (err) {

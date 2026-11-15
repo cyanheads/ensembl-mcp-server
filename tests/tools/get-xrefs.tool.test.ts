@@ -200,6 +200,27 @@ describe('ensemblGetXrefs', () => {
     expect(result.xrefs).toHaveLength(0);
   });
 
+  it.each([false, true])(
+    'names the dbname filter in an empty notice only when one was sent (all_levels=%s)',
+    async (all_levels) => {
+      for (const [dbname, sent] of [
+        [undefined, false],
+        ['   ', false],
+        ['RefSeq_mRNA', true],
+      ] as const) {
+        mockGetXrefsById.mockResolvedValueOnce([]);
+        const result = await runToolContract(ensemblGetXrefs, {
+          id: 'LRG_1p1.1',
+          dbname,
+          all_levels,
+        } as never);
+        const notice = String((result.structuredContent as { notice?: string }).notice);
+        expect(notice.startsWith('No cross-references found for LRG_1p1.1')).toBe(true);
+        expect(notice.includes('dbname filter')).toBe(sent);
+      }
+    },
+  );
+
   it('trims whitespace-only dbname to undefined (not passed to service)', async () => {
     mockGetXrefsById.mockResolvedValueOnce([hgncXref]);
     const ctx = createMockContext({ errors: ensemblGetXrefs.errors });

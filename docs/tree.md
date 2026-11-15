@@ -1,6 +1,6 @@
 # ensembl-mcp-server - Directory Structure
 
-Generated on: 2026-10-28 12:58:49
+Generated on: 2026-11-15 02:25:45
 
 ```text
 ensembl-mcp-server/
@@ -166,6 +166,7 @@ ensembl-mcp-server/
 │   │       │   ├── lookup-gene.tool.ts
 │   │       │   ├── predict-variant.tool.ts
 │   │       │   └── query-region.tool.ts
+│   │       ├── paging.ts
 │   │       ├── region-grammar.ts
 │   │       └── render-heading.ts
 │   ├── services/
@@ -189,19 +190,20 @@ ensembl-mcp-server/
 │   │   └── mcpb-agent-docs.test.ts
 │   ├── services/
 │   │   └── ensembl-service.test.ts
-│   └── tools/
-│       ├── annotations.upstream.test.ts
-│       ├── get-homology.tool.test.ts
-│       ├── get-homology.upstream.test.ts
-│       ├── get-sequence.tool.test.ts
-│       ├── get-sequence.upstream.test.ts
-│       ├── get-xrefs.tool.test.ts
-│       ├── list-species.tool.test.ts
-│       ├── lookup-gene.tool.test.ts
-│       ├── lookup-gene.upstream.test.ts
-│       ├── predict-variant.tool.test.ts
-│       ├── query-region.tool.test.ts
-│       └── query-region.upstream.test.ts
+│   ├── tools/
+│   │   ├── annotations.upstream.test.ts
+│   │   ├── get-homology.tool.test.ts
+│   │   ├── get-homology.upstream.test.ts
+│   │   ├── get-sequence.tool.test.ts
+│   │   ├── get-sequence.upstream.test.ts
+│   │   ├── get-xrefs.tool.test.ts
+│   │   ├── list-species.tool.test.ts
+│   │   ├── lookup-gene.tool.test.ts
+│   │   ├── lookup-gene.upstream.test.ts
+│   │   ├── predict-variant.tool.test.ts
+│   │   ├── query-region.tool.test.ts
+│   │   └── query-region.upstream.test.ts
+│   └── index.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes

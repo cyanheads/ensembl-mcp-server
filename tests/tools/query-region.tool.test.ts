@@ -5,13 +5,20 @@
 
 import { z } from '@cyanheads/mcp-ts-core';
 import { validationError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  createMockContext,
+  getEnrichment,
+  type MockContextLogger,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { loadServerConfig } from '@/config/server-config.js';
 import { ensemblQueryRegion } from '@/mcp-server/tools/definitions/query-region.tool.js';
 import type { OverlapFeature } from '@/services/ensembl/types.js';
 
 const mockQueryRegion = vi.fn();
 const mockGetDefaultAssemblyName = vi.fn();
+const { mockCounterAdd } = vi.hoisted(() => ({ mockCounterAdd: vi.fn() }));
 
 vi.mock('@/services/ensembl/ensembl-service.js', () => ({
   getEnsemblService: () => ({
@@ -20,10 +27,17 @@ vi.mock('@/services/ensembl/ensembl-service.js', () => ({
   }),
 }));
 
+// The tool creates its clamp counter at import; record what it adds.
+vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>()),
+  createCounter: () => ({ add: mockCounterAdd }),
+}));
+
 beforeEach(() => {
   mockQueryRegion.mockReset();
   mockGetDefaultAssemblyName.mockReset();
   mockGetDefaultAssemblyName.mockResolvedValue('GRCh38');
+  mockCounterAdd.mockReset();
 });
 
 /** Concatenated text of every `content[]` block — what a `content`-only client reads. */
@@ -199,7 +213,9 @@ describe('ensemblQueryRegion', () => {
     expect(result.totalCount).toBe(1500);
     const { notice } = getEnrichment(ctx) as { notice?: string };
     expect(notice).toContain('Large result set (1500 features)');
-    expect(notice).toContain('narrowing the region or filtering by biotype');
+    // Issue #62: biotype filters no variation row, so it is no remedy for a variation-only set.
+    expect(notice).toContain('Consider narrowing the region to reduce context usage.');
+    expect(notice).not.toContain('filtering by biotype');
   });
 
   it('returns an at-or-under-threshold result unchanged on both surfaces', async () => {
@@ -467,63 +483,273 @@ function variations(n: number, assemblyName = 'GRCh38'): OverlapFeature[] {
 
 const brca2Variation = { species: 'homo_sapiens', region: '13:32315086-32400268' } as const;
 
-describe('ensemblQueryRegion max_results cap (issue #17)', () => {
-  it('caps to 100 by default while totalCount stays the true pre-cap count on both surfaces', async () => {
+type PageSc = {
+  features: OverlapFeature[];
+  totalCount: number;
+  nextOffset?: number;
+  truncated?: boolean;
+  shown?: number;
+  cap?: number;
+  notice?: string;
+};
+
+/** A row's identity — an exon repeats once per parent transcript. */
+const identity = (f: OverlapFeature) =>
+  `${f.featureType}:${f.id}${f.parentId ? `@${f.parentId}` : ''}`;
+
+/**
+ * Ten rows of four types in an order unlike the page order, with ties broken at every
+ * key: rs2 shares rs0/rs1's start but ends first, rs0/rs1 share start and end,
+ * ENST1/ENST2 share both, ENSE2 repeats per parent. Each key's order contradicts the
+ * next key's, so dropping any one of them reorders the page.
+ */
+const mixedRows: OverlapFeature[] = [
+  { id: 'rs3', featureType: 'variation', chromosome: '13', start: 120, end: 120 },
+  { id: 'ENSE2', featureType: 'exon', chromosome: '13', start: 100, end: 180, parentId: 'ENST2' },
+  { id: 'rs1', featureType: 'variation', chromosome: '13', start: 100, end: 101 },
+  { id: 'ENST2', featureType: 'transcript', chromosome: '13', start: 100, end: 400 },
+  { id: 'ENSE2', featureType: 'exon', chromosome: '13', start: 100, end: 180, parentId: 'ENST1' },
+  { id: 'ENSG1', featureType: 'gene', chromosome: '13', start: 100, end: 500 },
+  { id: 'rs2', featureType: 'variation', chromosome: '13', start: 100, end: 100 },
+  { id: 'ENST1', featureType: 'transcript', chromosome: '13', start: 100, end: 400 },
+  { id: 'ENSE1', featureType: 'exon', chromosome: '13', start: 300, end: 400, parentId: 'ENST1' },
+  { id: 'rs0', featureType: 'variation', chromosome: '13', start: 100, end: 101 },
+];
+
+/** The page order for feature ["variation", "gene", "transcript", "exon"]. */
+const mixedOrder = [
+  'variation:rs2',
+  'variation:rs0',
+  'variation:rs1',
+  'variation:rs3',
+  'gene:ENSG1',
+  'transcript:ENST1',
+  'transcript:ENST2',
+  'exon:ENSE2@ENST1',
+  'exon:ENSE2@ENST2',
+  'exon:ENSE1@ENST1',
+];
+
+/** The max_results JSON Schema tools/list advertises — the SDK's own conversion call, as the wire carries it. */
+function advertisedMaxResults(): Record<string, unknown> {
+  const schema = ensemblQueryRegion.input['~standard'].jsonSchema.input({
+    target: 'draft-2020-12',
+  }) as { properties: Record<string, unknown> };
+  return JSON.parse(JSON.stringify(schema.properties.max_results)) as Record<string, unknown>;
+}
+
+describe('ensemblQueryRegion paging and the max_results cap (issues #17, #64)', () => {
+  it('returns 25 by default while totalCount stays the true pre-page count on both surfaces', async () => {
     mockQueryRegion.mockResolvedValueOnce(variations(250));
     const result = await runToolContract(ensemblQueryRegion, {
       ...brca2Variation,
       feature: ['variation'],
     });
     expect(result.isError).toBeUndefined();
-    const structured = result.structuredContent as {
-      features: OverlapFeature[];
-      totalCount: number;
-      truncated?: boolean;
-      shown?: number;
-      cap?: number;
-      notice?: string;
-    };
-    expect(structured.features).toHaveLength(100);
+    const structured = result.structuredContent as PageSc;
+    expect(structured.features).toHaveLength(25);
     expect(structured.features[0]?.id).toBe('rs1');
-    expect(structured.features[99]?.id).toBe('rs100');
+    expect(structured.features[24]?.id).toBe('rs25');
     expect(structured.totalCount).toBe(250);
-    expect(structured).toMatchObject({ truncated: true, shown: 100, cap: 100 });
-    expect(structured.notice).toContain('Showing 100 of 250 features');
-    expect(structured.notice).toContain('max_results');
+    expect(structured.nextOffset).toBe(25);
+    expect(structured).toMatchObject({ truncated: true, shown: 25, cap: 25 });
+    expect(structured.notice).toBe(
+      'Showing 25 of 250 features from offset 0. Call again with offset 25 (nextOffset) for the next page, raise max_results (at most 5000), or query a smaller region.',
+    );
 
     const text = contentText(result);
-    expect(text).toContain('**Features found:** 100 of 250');
-    expect(text).toContain('rs100');
-    expect(text).not.toContain('rs101');
-    expect(text).toContain('> Showing 100 of 250 features');
+    expect(text).toContain('**Features found:** 25 of 250');
+    expect(text).toContain('**Next offset:** 25');
+    expect(text).toContain('rs25');
+    expect(text).not.toContain('rs26');
+    expect(text).toContain(
+      '> Showing 25 of 250 features from offset 0. Call again with offset 25 (nextOffset) for the next page',
+    );
   });
 
-  it('returns a result exactly at the cap unchanged — no truncation, no notice', async () => {
-    mockQueryRegion.mockResolvedValueOnce(variations(100));
+  it('returns a result exactly at the page size unchanged — no truncation, no notice', async () => {
+    mockQueryRegion.mockResolvedValueOnce(variations(25));
     const result = await runToolContract(ensemblQueryRegion, {
       ...brca2Variation,
       feature: ['variation'],
     });
-    const structured = result.structuredContent as Record<string, unknown>;
-    expect((structured.features as unknown[]).length).toBe(100);
-    expect(structured.totalCount).toBe(100);
+    const structured = result.structuredContent as PageSc;
+    expect(structured.features).toHaveLength(25);
+    expect(structured.totalCount).toBe(25);
+    expect(structured).not.toHaveProperty('nextOffset');
     expect(structured.truncated).toBeUndefined();
     expect(structured.notice).toBeUndefined();
-    expect(contentText(result)).toContain('**Features found:** 100\n');
+    const text = contentText(result);
+    expect(text).toContain('**Features found:** 25\n');
+    expect(text).not.toContain('Next offset');
   });
 
-  it('returns every feature when max_results is 0', async () => {
-    mockQueryRegion.mockResolvedValueOnce(variations(250));
+  it('orders a page by requested feature type, then start, end, id, and parentId — not upstream order', async () => {
+    mockQueryRegion.mockResolvedValueOnce(mixedRows);
+    const result = await runToolContract(ensemblQueryRegion, {
+      ...brca2Variation,
+      feature: ['variation', 'gene', 'transcript', 'exon'],
+    });
+    const structured = result.structuredContent as PageSc;
+    expect(structured.features.map(identity)).toEqual(mixedOrder);
+  });
+
+  it('ranks a feature type named twice by its first position in feature', async () => {
+    mockQueryRegion.mockResolvedValueOnce(
+      mixedRows.filter((f) => f.id === 'ENSG1' || f.id === 'rs1'),
+    );
+    const result = await runToolContract(ensemblQueryRegion, {
+      ...brca2Variation,
+      feature: ['variation', 'gene', 'variation'],
+    });
+    const structured = result.structuredContent as PageSc;
+    expect(structured.features.map(identity)).toEqual(['variation:rs1', 'gene:ENSG1']);
+  });
+
+  it('walks nextOffset to disjoint, contiguous pages that rebuild the full ordered set', async () => {
+    const pages: PageSc[] = [];
+    let offset: number | undefined = 0;
+    while (offset !== undefined) {
+      // Every page re-reads the full overlap set; serve it in a different order each time.
+      mockQueryRegion.mockResolvedValueOnce(
+        pages.length % 2 === 0 ? mixedRows : mixedRows.toReversed(),
+      );
+      const result = await runToolContract(ensemblQueryRegion, {
+        ...brca2Variation,
+        feature: ['variation', 'gene', 'transcript', 'exon'],
+        max_results: 3,
+        offset,
+      });
+      const structured = result.structuredContent as PageSc;
+      pages.push(structured);
+      offset = structured.nextOffset;
+    }
+    expect(pages.map((p) => p.features.length)).toEqual([3, 3, 3, 1]);
+    expect(pages.map((p) => p.nextOffset)).toEqual([3, 6, 9, undefined]);
+    expect(pages.map((p) => p.truncated)).toEqual([true, true, true, undefined]);
+    for (const p of pages) expect(p.totalCount).toBe(10);
+    const walked = pages.flatMap((p) => p.features.map(identity));
+    expect(new Set(walked).size).toBe(walked.length);
+    expect(walked).toEqual(mixedOrder);
+    // The final page carries neither truncation nor a continuation notice.
+    expect(pages[3]).not.toHaveProperty('notice');
+    expect(mockQueryRegion).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([30, 31])(
+    'reports offset %i past the end of 30 features with its own notice, keeping totalCount',
+    async (offset) => {
+      mockQueryRegion.mockResolvedValueOnce(variations(30));
+      const result = await runToolContract(ensemblQueryRegion, {
+        ...brca2Variation,
+        feature: ['variation'],
+        offset,
+      });
+      expect(result.isError).toBeUndefined();
+      const structured = result.structuredContent as PageSc;
+      expect(structured.features).toEqual([]);
+      expect(structured.totalCount).toBe(30);
+      expect(structured).not.toHaveProperty('nextOffset');
+      expect(structured).not.toHaveProperty('truncated');
+      const pastEnd = `No features returned: offset ${offset} is at or past the end of the 30 matching features. Request an offset below 30, or omit offset for the first page.`;
+      expect(structured.notice).toBe(pastEnd);
+      const text = contentText(result);
+      expect(text).toContain(`> ${pastEnd}`);
+      expect(text).toContain('No features on this page — 30 features match in total.');
+      expect(text).not.toContain('No features found in this region');
+    },
+  );
+
+  it('returns 5,000 features with a clamp notice and nextOffset for max_results 0', async () => {
+    mockQueryRegion.mockResolvedValueOnce(variations(6000));
     const result = await runToolContract(ensemblQueryRegion, {
       ...brca2Variation,
       feature: ['variation'],
       max_results: 0,
     });
-    const structured = result.structuredContent as Record<string, unknown>;
-    expect((structured.features as unknown[]).length).toBe(250);
-    expect(structured.totalCount).toBe(250);
-    expect(structured.truncated).toBeUndefined();
-    expect(structured.notice).toBeUndefined();
+    expect(result.isError).toBeUndefined();
+    const structured = result.structuredContent as PageSc;
+    expect(structured.features).toHaveLength(5000);
+    expect(structured.features[4999]?.id).toBe('rs5000');
+    expect(structured.totalCount).toBe(6000);
+    expect(structured.nextOffset).toBe(5000);
+    expect(structured).toMatchObject({ truncated: true, shown: 5000, cap: 5000 });
+    expect(structured.notice).toContain(
+      'Requested max_results 0; applied 5000, the most features one page returns.',
+    );
+    expect(structured.notice).toContain('Call again with offset 5000 (nextOffset)');
+    // Already at the cap: raising max_results is no route to more.
+    expect(structured.notice).not.toContain('raise max_results');
+    const text = contentText(result);
+    expect(text).toContain('> Requested max_results 0; applied 5000');
+    expect(text).toContain('Call again with offset 5000 (nextOffset)');
+    expect(text).toContain('**Next offset:** 5000');
+  });
+
+  it.each([5001, 1e20])(
+    'clamps max_results %d to 5,000, logging once and counting the clamp',
+    async (maxResults) => {
+      mockQueryRegion.mockResolvedValueOnce(variations(6000));
+      const result = await runToolContract(ensemblQueryRegion, {
+        ...brca2Variation,
+        feature: ['variation'],
+        max_results: maxResults,
+      });
+      expect(result.isError).toBeUndefined();
+      const structured = result.structuredContent as PageSc;
+      expect(structured.features).toHaveLength(5000);
+      expect(structured.nextOffset).toBe(5000);
+      expect(structured.cap).toBe(5000);
+      const clampNotice = `Requested max_results ${maxResults}; applied 5000, the most features one page returns.`;
+      expect(structured.notice).toContain(clampNotice);
+      expect(contentText(result)).toContain(clampNotice);
+      expect(mockCounterAdd).toHaveBeenCalledTimes(1);
+      expect(mockCounterAdd).toHaveBeenCalledWith(1, { 'mcp.tool.name': 'ensembl_query_region' });
+
+      mockQueryRegion.mockResolvedValueOnce(variations(6000));
+      const ctx = createMockContext({ errors: ensemblQueryRegion.errors });
+      const input = ensemblQueryRegion.input.parse({ ...brca2Variation, max_results: maxResults });
+      await ensemblQueryRegion.handler(input, ctx);
+      const clampLogs = (ctx.log as MockContextLogger).calls.filter((c) =>
+        c.msg.startsWith('Clamped'),
+      );
+      expect(clampLogs).toEqual([
+        {
+          level: 'info',
+          msg: 'Clamped max_results to the page cap',
+          data: { requested: maxResults, applied: 5000 },
+        },
+      ]);
+    },
+  );
+
+  it('neither clamps, logs, nor counts at the cap', async () => {
+    mockQueryRegion.mockResolvedValueOnce(variations(6000));
+    const ctx = createMockContext({ errors: ensemblQueryRegion.errors });
+    const input = ensemblQueryRegion.input.parse({ ...brca2Variation, max_results: 5000 });
+    const result = await ensemblQueryRegion.handler(input, ctx);
+    expect(result.features).toHaveLength(5000);
+    const { notice } = getEnrichment(ctx) as { notice?: string };
+    expect(notice).not.toContain('Requested max_results');
+    expect(mockCounterAdd).not.toHaveBeenCalled();
+    expect((ctx.log as MockContextLogger).calls.some((c) => c.msg.startsWith('Clamped'))).toBe(
+      false,
+    );
+  });
+
+  it('advertises an integer with a minimum and no maximum, accepting any finite integer', () => {
+    const schema = advertisedMaxResults();
+    expect(schema).toEqual({
+      type: 'integer',
+      minimum: 0,
+      default: 25,
+      description: expect.stringContaining(
+        'Default 25; 0 returns 5,000 and says so. A value above 5,000 is clamped',
+      ),
+    });
+    expect(
+      ensemblQueryRegion.input.safeParse({ ...brca2Variation, max_results: 1e20 }).success,
+    ).toBe(true);
   });
 
   it('returns everything when max_results exceeds the result size', async () => {
@@ -543,7 +769,7 @@ describe('ensemblQueryRegion max_results cap (issue #17)', () => {
     const ctx = createMockContext({ errors: ensemblQueryRegion.errors });
     const input = ensemblQueryRegion.input.parse({ ...brca2Variation, feature: ['variation'] });
     const result = await ensemblQueryRegion.handler(input, ctx);
-    expect(result.features).toHaveLength(100);
+    expect(result.features).toHaveLength(25);
     expect(result.totalCount).toBe(1500);
     const enrichment = getEnrichment(ctx) as {
       notice?: string;
@@ -551,12 +777,12 @@ describe('ensemblQueryRegion max_results cap (issue #17)', () => {
       shown?: number;
       cap?: number;
     };
-    expect(enrichment).toMatchObject({ truncated: true, shown: 100, cap: 100 });
-    expect(enrichment.notice).toContain('Showing 100 of 1500 features');
+    expect(enrichment).toMatchObject({ truncated: true, shown: 25, cap: 25 });
+    expect(enrichment.notice).toContain('Showing 25 of 1500 features');
     expect(enrichment.notice).toContain('Large result set (1500 features)');
   });
 
-  it('keeps the >1000 warning without truncation when uncapped', async () => {
+  it('keeps the >1000 warning without truncation when one page holds the whole set', async () => {
     mockQueryRegion.mockResolvedValueOnce(variations(1500));
     const ctx = createMockContext({ errors: ensemblQueryRegion.errors });
     const input = ensemblQueryRegion.input.parse({
@@ -606,6 +832,234 @@ describe('ensemblQueryRegion max_results cap (issue #17)', () => {
       expect(mockQueryRegion).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('ensemblQueryRegion with ENSEMBL_CLAMP_LIMITS=false (issue #64)', () => {
+  beforeEach(() => {
+    vi.stubEnv('ENSEMBL_CLAMP_LIMITS', 'false');
+    // tool() already emitted the schema at import; a config loaded after it still reaches every surface.
+    loadServerConfig();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    loadServerConfig();
+  });
+
+  it('advertises maximum 5000, and drops it again once the switch is back on', () => {
+    expect(advertisedMaxResults()).toMatchObject({ type: 'integer', minimum: 0, maximum: 5000 });
+    vi.unstubAllEnvs();
+    loadServerConfig();
+    expect(advertisedMaxResults()).not.toHaveProperty('maximum');
+  });
+
+  it('fails to load on a value that is not a boolean, naming the variable', () => {
+    vi.stubEnv('ENSEMBL_CLAMP_LIMITS', 'maybe');
+    expect(() => loadServerConfig()).toThrow(/ENSEMBL_CLAMP_LIMITS/);
+  });
+
+  it.each([5001, 1e20])(
+    'rejects max_results %d as too_big at the cap, before any request',
+    async (maxResults) => {
+      const result = await runToolContract(ensemblQueryRegion, {
+        ...brca2Variation,
+        max_results: maxResults,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: -32602,
+          data: { issues: [{ code: 'too_big', path: ['max_results'], maximum: 5000 }] },
+        },
+      });
+      expect(mockQueryRegion).not.toHaveBeenCalled();
+      expect(mockCounterAdd).not.toHaveBeenCalled();
+    },
+  );
+
+  it('serves 5000 and still clamps 0 to one 5,000-feature page', async () => {
+    mockQueryRegion.mockResolvedValueOnce(variations(6000));
+    const atCap = await runToolContract(ensemblQueryRegion, {
+      ...brca2Variation,
+      max_results: 5000,
+    });
+    expect((atCap.structuredContent as PageSc).features).toHaveLength(5000);
+
+    mockQueryRegion.mockResolvedValueOnce(variations(6000));
+    const zero = await runToolContract(ensemblQueryRegion, { ...brca2Variation, max_results: 0 });
+    expect(zero.isError).toBeUndefined();
+    const structured = zero.structuredContent as PageSc;
+    expect(structured.features).toHaveLength(5000);
+    expect(structured.nextOffset).toBe(5000);
+    expect(structured.notice).toContain('Requested max_results 0; applied 5000');
+  });
+});
+
+describe('ensemblQueryRegion composed notice order (issues #62, #64)', () => {
+  /** Rows without a per-feature assembly, so a failed fallback adds the assembly fragment. */
+  const bare = (n: number, featureType: string): OverlapFeature[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `${featureType}${i}`,
+      featureType,
+      chromosome: '13',
+      start: 1000 + i,
+      end: 1000 + i,
+    }));
+
+  /** Asserts each fragment appears, in this order, in one notice. */
+  function expectOrdered(notice: string | undefined, fragments: string[]) {
+    const at = fragments.map((f) => notice?.indexOf(f) ?? -1);
+    for (const i of at) expect(i).toBeGreaterThanOrEqual(0);
+    expect(at).toEqual(at.toSorted((a, b) => a - b));
+  }
+
+  it('orders clamp, next page, biotype, large result, then the assembly gap', async () => {
+    mockQueryRegion.mockResolvedValueOnce([...bare(10, 'gene'), ...bare(5990, 'variation')]);
+    mockGetDefaultAssemblyName.mockRejectedValueOnce(new Error('Ensembl API returned HTTP 503.'));
+    const result = await runToolContract(ensemblQueryRegion, {
+      ...brca2Variation,
+      feature: ['gene', 'variation'],
+      biotype: 'protein_coding',
+      max_results: 0,
+    });
+    const { notice } = result.structuredContent as PageSc;
+    expectOrdered(notice, [
+      'Requested max_results 0; applied 5000',
+      'Showing 5000 of 6000 features from offset 0. Call again with offset 5000 (nextOffset)',
+      'so the variation features are not filtered by "protein_coding"',
+      'Large result set (6000 features). Consider narrowing the region to reduce context usage.',
+      'could not be resolved',
+    ]);
+    expect(contentText(result)).toContain(`> ${notice}`);
+  });
+
+  it('opens with the past-end fragment, ahead of the clamp', async () => {
+    mockQueryRegion.mockResolvedValueOnce(bare(1200, 'regulatory'));
+    mockGetDefaultAssemblyName.mockRejectedValueOnce(new Error('Ensembl API returned HTTP 503.'));
+    const result = await runToolContract(ensemblQueryRegion, {
+      ...brca2Variation,
+      feature: ['regulatory'],
+      biotype: 'promoter',
+      max_results: 9000,
+      offset: 1200,
+    });
+    const { notice } = result.structuredContent as PageSc;
+    expect(notice?.startsWith('No features returned: offset 1200 is at or past the end')).toBe(
+      true,
+    );
+    expectOrdered(notice, [
+      'offset 1200 is at or past the end of the 1200 matching features',
+      'Requested max_results 9000; applied 5000',
+      'so the regulatory features are not filtered by "promoter"',
+      'Large result set (1200 features). Consider narrowing the region to reduce context usage.',
+      'could not be resolved',
+    ]);
+    expect(notice).not.toContain('Showing');
+  });
+});
+
+describe('ensemblQueryRegion biotype scope (issue #62)', () => {
+  const unfilteredFragment = (types: string, biotype: string) =>
+    `Ensembl applies biotype only to gene, transcript, and exon features (an exon by its parent transcript's biotype), so the ${types} features are not filtered by "${biotype}".`;
+
+  it('names variation and regulatory as unfiltered on both surfaces, still forwarding biotype', async () => {
+    mockQueryRegion.mockResolvedValueOnce([brca2Feature, ...variations(2)]);
+    const result = await runToolContract(ensemblQueryRegion, {
+      ...brca2Variation,
+      feature: ['gene', 'variation', 'regulatory'],
+      biotype: 'protein_coding',
+    });
+    expect(result.isError).toBeUndefined();
+    const { notice } = result.structuredContent as PageSc;
+    expect(notice).toBe(unfilteredFragment('variation and regulatory', 'protein_coding'));
+    expect(contentText(result)).toContain(
+      'so the variation and regulatory features are not filtered by',
+    );
+    expect(mockQueryRegion).toHaveBeenCalledWith(
+      'homo_sapiens',
+      '13:32315086-32400268',
+      ['gene', 'variation', 'regulatory'],
+      'protein_coding',
+      expect.anything(),
+    );
+  });
+
+  it.each<[string, string[], string | undefined]>([
+    ['a gene/transcript/exon-only request', ['gene', 'transcript', 'exon'], 'protein_coding'],
+    ['an unset biotype', ['variation', 'regulatory'], undefined],
+  ])('adds no unfiltered fragment for %s', async (_label, feature, biotype) => {
+    mockQueryRegion.mockResolvedValueOnce([brca2Feature]);
+    const result = await runToolContract(ensemblQueryRegion, {
+      ...brca2Variation,
+      feature: feature as ('gene' | 'transcript' | 'exon' | 'variation' | 'regulatory')[],
+      ...(biotype && { biotype }),
+    });
+    expect(result.structuredContent).not.toHaveProperty('notice');
+  });
+
+  it('blames no biotype for an empty variation-only region, and says it filtered nothing', async () => {
+    mockQueryRegion.mockResolvedValueOnce([]);
+    const result = await runToolContract(ensemblQueryRegion, {
+      species: 'homo_sapiens',
+      region: '1:1-5000',
+      feature: ['variation'],
+      biotype: 'SNV',
+    });
+    const { notice } = result.structuredContent as PageSc;
+    expect(notice).toContain('No variation features found in 1:1-5000 for homo_sapiens.');
+    expect(notice).toContain('may be intergenic');
+    expect(notice).not.toContain('may exclude');
+    expect(notice).toContain(unfilteredFragment('variation', 'SNV'));
+  });
+
+  it('cites the biotype for an empty region when a filterable type was requested', async () => {
+    mockQueryRegion.mockResolvedValueOnce([]);
+    const result = await runToolContract(ensemblQueryRegion, {
+      species: 'homo_sapiens',
+      region: '1:1-5000',
+      feature: ['exon', 'variation'],
+      biotype: 'lncrna',
+    });
+    const { notice } = result.structuredContent as PageSc;
+    expect(notice).toContain('The biotype filter "lncrna" may exclude matching features.');
+    expect(notice).not.toContain('intergenic');
+    expect(notice).toContain(unfilteredFragment('variation', 'lncrna'));
+  });
+
+  it('suggests filtering by biotype for a large result only when a filterable type was requested', async () => {
+    mockQueryRegion.mockResolvedValueOnce([brca2Feature, ...variations(1500)]);
+    const result = await runToolContract(ensemblQueryRegion, {
+      ...brca2Variation,
+      feature: ['gene', 'variation'],
+    });
+    expect((result.structuredContent as PageSc).notice).toContain(
+      'Large result set (1501 features). Consider narrowing the region or filtering by biotype to reduce context usage.',
+    );
+  });
+
+  it('drops the biotype suggestion from a large result when biotype is already set', async () => {
+    mockQueryRegion.mockResolvedValueOnce([brca2Feature, ...variations(1500)]);
+    const result = await runToolContract(ensemblQueryRegion, {
+      ...brca2Variation,
+      feature: ['gene', 'variation'],
+      biotype: 'protein_coding',
+    });
+    const { notice } = result.structuredContent as PageSc;
+    expect(notice).toContain(
+      'Large result set (1501 features). Consider narrowing the region to reduce context usage.',
+    );
+    expect(notice).not.toContain('filtering by biotype');
+  });
+
+  it('names the filtered types and drops SNV from the biotype descriptions', () => {
+    const inputDescription = ensemblQueryRegion.input.shape.biotype.description ?? '';
+    const outputDescription =
+      ensemblQueryRegion.output.shape.features.element.shape.biotype.description ?? '';
+    expect(inputDescription).toContain('gene, transcript, and exon features');
+    expect(inputDescription).toContain('Variation and regulatory features carry no biotype');
+    expect(outputDescription).toContain('Exon, variation, and regulatory rows carry none');
+    for (const text of [inputDescription, outputDescription]) expect(text).not.toContain('SNV');
+  });
 });
 
 describe('ensemblQueryRegion assemblyName (issue #23)', () => {

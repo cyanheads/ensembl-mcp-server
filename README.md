@@ -47,8 +47,8 @@ Gene, sequence, and variant data for vertebrates and other model organisms from 
 
 | Resource | Description |
 |:---|:---|
-| `ensembl://gene/{id}` | Gene record by stable ID (`ENSG…`) — location, biotype, description, and transcript list |
-| `ensembl://transcript/{id}` | Transcript record by stable ID (`ENST…`) — parent gene, location, biotype, canonical flag, and length |
+| `ensembl://gene/{id}` | Gene record by stable ID (`ENSG…`, or the species' own form: `AT1G01010`, `FBgn0000042`, `LRG_1`) — location, biotype, description, and transcript list |
+| `ensembl://transcript/{id}` | Transcript record by stable ID (`ENST…`, or the species' own form: `AT1G01010.1`, `FBtr0070823`, `LRG_1t1`) — parent gene, location, biotype, canonical flag, and length |
 | `ensembl://species` | Supported Ensembl species for the endpoint default division (vertebrates on the default endpoint) |
 | `ensembl://species/{division}` | Supported species in one division (`EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, `EnsemblProtists`) |
 
@@ -62,13 +62,13 @@ The species resources return the first 50 species by internal name; the `ensembl
 
 ## Capability reference
 
-Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as not found, so every tool and resource that takes an Ensembl stable ID drops a trailing `.N` from an `ENS…` ID before the request and returns the current version. HGVS input to `ensembl_predict_variant` (`ENST00000380152.8:c.2T>A`) keeps its version, and IDs from other sources (`AT3G52430.1`) are forwarded unchanged.
+Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as not found, so every tool and resource that takes an Ensembl stable ID drops a trailing `.N` from an `ENS…` ID, or from an LRG transcript or translation ID (`LRG_1t1.1`, `LRG_1p1.12`), before the request and returns the current version. HGVS input to `ensembl_predict_variant` (`ENST00000380152.8:c.2T>A`) keeps its version, and IDs from other sources (`AT3G52430.1`) are forwarded unchanged.
 
 ### `ensembl_list_species` <sub>tool</sub>
 
 - Optional `division` (`EnsemblVertebrates`, `EnsemblPlants`, `EnsemblFungi`, `EnsemblMetazoa`, `EnsemblProtists`; omitted, the endpoint default — vertebrates, ~356 species on GRCh38) and `nameContains`, a substring match against name, display name, and common name
 - Returns the internal name every other tool expects (`homo_sapiens`), plus display name, common name, taxon ID, assembly, and division
-- Sorted by internal name and paged by `offset` (default `0`) and `max_results` (default `50`, `0` uncapped); `totalCount` reports every match, and `nextOffset` is where the next page starts when more follow
+- Sorted by internal name and paged by `offset` (default `0`) and `max_results` (default `25`, `0` uncapped); `totalCount` reports every match, and `nextOffset` is where the next page starts when more follow
 
 ---
 
@@ -92,8 +92,9 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 
 ### `ensembl_query_region` <sub>tool</sub>
 
-- `region` as `species:chr:start-end`, or `chr:start-end` with `species` (at most 5,000,000 bases; reversed coordinates are rejected; mitochondrion naming as in `ensembl_get_sequence`); `feature` defaults to `["gene"]` and also accepts `transcript`, `variation`, `regulatory`, `exon`; optional case-sensitive `biotype` filter (`protein_coding`, `lncRNA`). An empty filtered result suggests removing the filter without inferring the locus is intergenic
-- `max_results` caps the list (default `100`, `0` uncapped) while `totalCount` reports the true count; `assemblyName` names the coordinates' assembly, and exon rows carry `parentId` and `rank`. Errors: `invalid_region`, `invalid_species`, `missing_species`
+- `region` as `species:chr:start-end`, or `chr:start-end` with `species` (at most 5,000,000 bases; reversed coordinates are rejected; mitochondrion naming as in `ensembl_get_sequence`); `feature` defaults to `["gene"]` and also accepts `transcript`, `variation`, `regulatory`, `exon`; optional case-sensitive `biotype` filter (`protein_coding`, `lncRNA`), applied to gene, transcript, and exon features only (an exon by its parent transcript's biotype); variation and regulatory features come back unfiltered, with a notice. An empty filtered result suggests removing the filter without inferring the locus is intergenic
+- Features come in one fixed order (requested feature type, then start, end, ID, parent transcript), paged by `offset` (default `0`) and `max_results` (default `25`). `0` or a value above 5,000 returns 5,000 features and says so; with `ENSEMBL_CLAMP_LIMITS=false` the schema advertises 5,000 as the maximum and rejects larger values instead. `totalCount` reports the true count and `nextOffset` where the next page starts. Ensembl has no paging of its own, so every page re-reads the full overlap set; a 5,000-row variation page is about 0.75 MB
+- `assemblyName` names the coordinates' assembly, and exon rows carry `parentId` and `rank`. Errors: `invalid_region`, `invalid_species`, `missing_species`
 
 ---
 
@@ -101,8 +102,10 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 
 - `variant` as HGVS (transcript-relative or genomic), region+allele (`chr:start:end:strand/allele`), or a dbSNP rsID
 - Returns the most severe consequence, per-transcript impact (HIGH/MODERATE/LOW/MODIFIER), and colocated known variants with clinical significance. Errors: `invalid_notation`, `not_found`, `invalid_species`
-- Requests HGVS, canonical and MANE annotations on every input route. Consequences retain `variantAllele`, optional `canonical`/`maneSelect`, HGVS and available SIFT/PolyPhen prediction-score pairs; records retain `alleleString`
-- Colocated `clinicalSignificance` is aggregate, not a classification of the submitted allele. `clinicalSignificanceByAllele` preserves explicit per-allele terms and `clinicalSignificanceReferenceAllele` identifies their reference allele; absent annotations remain omitted
+- A region+allele input on strand `-1` has its allele reverse-complemented and is sent on the forward strand, with a notice; `-` and structural-variant terms (`DUP`, `DEL`) pass unchanged. A `-1` allele that equals the forward reference fails as `invalid_notation`, naming the forward request
+- Each record and each colocated variant reports `strand`, and its alleles (`alleleString`, `variantAllele`, `clinicalSignificanceByAllele` keys) read on that strand. A transcript or protein HGVS on a reverse-strand gene reports `-1`. A notice appears when a record's strand differs from a colocated variant's
+- Requests HGVS, canonical and MANE annotations on every input route. Consequences retain `variantAllele`, optional `canonical`/`maneSelect`, HGVS and available SIFT/PolyPhen prediction-score pairs, with scores shown as Ensembl stores them (`0`, not `0.000`); records retain `alleleString`
+- Colocated `clinicalSignificance` is aggregate, not a classification of the submitted allele. `clinicalSignificanceByAllele` preserves explicit per-allele terms and `clinicalSignificanceReferenceAllele` identifies their reference allele; absent annotations remain omitted. An empty allele key in Ensembl's per-allele terms is read as the deletion allele `-` only when that colocated variant's `alleleString` lists `-`
 - `max_transcript_consequences` and `max_pubmed_ids_per_variant` (default `10` each, `0` uncapped; `include_all_colocated_pubmed` lifts the PubMed cap) bound the result, while `transcriptConsequencesTotal` and `pubmedTotal` report the full counts
 
 ---
@@ -111,8 +114,9 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 
 - Exactly one of `symbol` (+ `species`, default `homo_sapiens`) or `id`; `type` is `orthologues` (default), `paralogues`, or `all`; optional `target_species` filter
 - A `target_species` outside the comparison Ensembl runs for the source species (a fly gene to `homo_sapiens`) is answered from Ensembl's pan-taxonomic comparison when it holds both species, with a notice saying so
-- `max_results` caps the list (default `25`, `0` uncapped) while `totalCount` reports the true count. Errors: `not_found`, `invalid_species` (unknown `species` or `target_species`), `target_not_compared` (a target outside the source species' comparison that the pan-taxonomic comparison cannot answer), `no_input`, `conflicting_input`
-- Each row retains optional `targetProteinId` for `ensembl_get_sequence` with `type:"protein"`. Optional `targetSymbol` comes from a lookup of the returned rows' distinct gene IDs, in chunks of at most 1,000, with one five-second budget bounded by the call's remaining deadline and no retries. Missing names or failed lookups retain every primary homolog with a notice; cancellation still aborts
+- Homologs keep Ensembl's own order, which starts with the closest relatives and is stable across calls, and are paged by `offset` (default `0`) and `max_results` (default `25`; `0` returns every homolog from `offset`). `totalCount` reports the true count and `nextOffset` where the next page starts. Errors: `not_found`, `invalid_species` (unknown `species` or `target_species`), `target_not_compared` (a target outside the source species' comparison that the pan-taxonomic comparison cannot answer), `no_input`, `conflicting_input`
+- `percId` and `percPos` are shown as Ensembl stores them
+- Each row retains optional `targetProteinId` for `ensembl_get_sequence` with `type:"protein"`. Optional `targetSymbol` comes from a lookup of the returned page's distinct gene IDs, five per request and three requests at a time, sharing one ten-second budget bounded by the call's remaining deadline, with no retries. Missing names or failed lookups retain every primary homolog with a notice; cancellation still aborts
 
 ---
 
@@ -126,15 +130,15 @@ Ensembl's stable-ID endpoints answer a versioned ID (`ENSG00000139618.19`) as no
 
 ### `ensembl://gene/{id}` <sub>resource</sub>
 
-- `id` is a gene stable ID (`ENSG…`); a version suffix is optional and dropped
-- Returns location, biotype, description, and transcript list. Errors: `not_found`
+- `id` is a gene stable ID (`ENSG…`, or the species' own form: `AT1G01010`, `FBgn0000042`, `YFL039C`, `LRG_1`); a version suffix on an `ENS…` ID is optional and dropped
+- Returns location, biotype, description, and transcript list. An ID Ensembl holds as a transcript, translation, or exon is refused as `wrong_object_type`, naming the type found, its parent, and where to read it. Errors: `not_found`, `wrong_object_type`
 
 ---
 
 ### `ensembl://transcript/{id}` <sub>resource</sub>
 
-- `id` is a transcript stable ID (`ENST…`); a version suffix is optional and dropped
-- Returns parent gene, location, biotype, canonical flag, and length. Errors: `not_found`
+- `id` is a transcript stable ID (`ENST…`, or the species' own form: `AT1G01010.1`, `FBtr0070823`, `YFL039C_mRNA`, `LRG_1t1`); a version suffix on an `ENS…` or LRG ID is optional and dropped
+- Returns parent gene, location, biotype, canonical flag, and length. An ID Ensembl holds as a gene, translation, or exon is refused as `wrong_object_type`, naming the type found, its parent, and where to read it. Errors: `not_found`, `wrong_object_type`
 
 ---
 
@@ -174,7 +178,7 @@ Ensembl-specific:
 Agent-friendly output:
 
 - `ensembl_get_sequence` returns bounded windows (10,000 characters by default) with the full length and a `nextOffset` to continue
-- `ensembl_list_species` is the discovery step for internal species names, 50 per page with a `nextOffset`
+- `ensembl_list_species` is the discovery step for internal species names, 25 per page with a `nextOffset`
 - Xref IDs from `ensembl_get_xrefs` are described as inputs for protein, disease, pathway, and structure servers; the `ensembl_gene_dossier` prompt chains 6 of the 7 tools
 
 ## Getting started
@@ -213,6 +217,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | Variable | Description | Default |
 |:---------|:------------|:--------|
 | `ENSEMBL_BASE_URL` | Ensembl REST API base URL. Override for GRCh37 (`https://grch37.rest.ensembl.org`) or a local mirror. | `https://rest.ensembl.org` |
+| `ENSEMBL_CLAMP_LIMITS` | `ensembl_query_region` clamps a `max_results` above 5,000 to 5,000 with a notice. Set `false` to advertise 5,000 as the schema maximum and reject larger values. | `true` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http` | `stdio` |
 | `MCP_HTTP_PORT` | HTTP server port | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path | `/mcp` |
@@ -229,7 +234,7 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ### Local development
 
-Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+Requires [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 
 - **Clone and install:**
 

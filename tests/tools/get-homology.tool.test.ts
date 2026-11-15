@@ -60,15 +60,28 @@ const ratOrtholog: HomologyEntry = {
 const BRCA2_ID = 'ENSG00000139618';
 const TP53_ID = 'ENSG00000141510';
 
-// 174 homologs, mirroring the BRCA2-orthologues field-test evidence (issue #15).
-const manyHomologs: HomologyEntry[] = Array.from({ length: 174 }, (_, i) => ({
-  targetId: `ENSORG${String(i).padStart(11, '0')}`,
-  targetSpecies: `species_${i}`,
-  type: 'ortholog_one2one',
-  percId: 90,
-  percPos: 92,
-  taxonomyLevel: 'Vertebrata',
-}));
+/**
+ * 174 homologs, mirroring the BRCA2-orthologues field-test evidence (issue #15). Frozen: the
+ * expected order is read from this array, so a handler that reordered it in place would
+ * rewrite its own expectation.
+ */
+const manyHomologs: readonly HomologyEntry[] = Object.freeze(
+  Array.from({ length: 174 }, (_, i) => ({
+    targetId: `ENSORG${String(i).padStart(11, '0')}`,
+    targetSpecies: `species_${i}`,
+    type: 'ortholog_one2one',
+    percId: 90,
+    percPos: 92,
+    taxonomyLevel: 'Vertebrata',
+  })),
+);
+
+/** Concatenated text of every `content[]` block — what a `content`-only client reads. */
+const contentText = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+  (result.content ?? [])
+    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n');
 
 describe('ensemblGetHomology', () => {
   it('finds orthologs by gene symbol and returns the resolved stable ID as queryId', async () => {
@@ -326,6 +339,168 @@ describe('ensemblGetHomology', () => {
     });
   });
 
+  describe('offset continuation (#64)', () => {
+    type Page = {
+      homologs: HomologyEntry[];
+      totalCount: number;
+      nextOffset?: number;
+      notice?: string;
+      truncated?: boolean;
+      shown?: number;
+      cap?: number;
+    };
+    const page = async (args: Record<string, unknown>) => {
+      const result = await runToolContract(ensemblGetHomology, { symbol: 'BRCA2', ...args });
+      return { result, data: result.structuredContent as Page, text: contentText(result) };
+    };
+    const ids = (rows: readonly HomologyEntry[]) => rows.map((h) => h.targetId);
+
+    beforeEach(() => {
+      // A fresh array per call, as the service returns one.
+      mockGetHomologyBySymbol.mockImplementation(async () => ({
+        homologs: [...manyHomologs],
+        resolvedQueryId: BRCA2_ID,
+      }));
+    });
+    afterEach(() => mockGetHomologyBySymbol.mockReset());
+
+    it('walks disjoint pages in Ensembl order that together equal the full set', async () => {
+      const offsets: number[] = [];
+      const seen: string[] = [];
+      let offset: number | undefined = 0;
+      while (offset !== undefined && offsets.length < 10) {
+        offsets.push(offset);
+        const { data } = await page({ offset });
+        expect(data.totalCount).toBe(174);
+        seen.push(...ids(data.homologs));
+        offset = data.nextOffset;
+      }
+      expect(offsets).toEqual([0, 25, 50, 75, 100, 125, 150]);
+      expect(offset).toBeUndefined();
+      // Upstream order, not a re-sort (species_10 would precede species_2 alphabetically).
+      expect(seen).toEqual(ids(manyHomologs));
+    });
+
+    it('names the next offset on both surfaces while homologs remain', async () => {
+      const { data, text } = await page({ offset: 25 });
+      expect(ids(data.homologs)).toEqual(ids(manyHomologs.slice(25, 50)));
+      expect(data).toMatchObject({
+        totalCount: 174,
+        nextOffset: 50,
+        truncated: true,
+        shown: 25,
+        cap: 25,
+      });
+      expect(
+        data.notice?.startsWith(
+          'Showing 25 of 174 homologs from offset 25. Call again with offset 50 (nextOffset) for the next page, set max_results to 0 for every remaining homolog, or set target_species to narrow to one species. ',
+        ),
+      ).toBe(true);
+      const lines = text.split('\n');
+      expect(lines).toContain('**Next offset:** 50');
+      expect(lines).toContain(`> ${escapeMarkdownInline(data.notice!)}`);
+      expect(text).toContain('**Found:** 25 of 174');
+    });
+
+    it('drops the target_species suggestion when target_species is already set', async () => {
+      const { data } = await page({ target_species: 'mus_musculus' });
+      expect(data.nextOffset).toBe(25);
+      expect(
+        data.notice?.startsWith(
+          'Showing 25 of 174 homologs from offset 0. Call again with offset 25 (nextOffset) for the next page, or set max_results to 0 for every remaining homolog. ',
+        ),
+      ).toBe(true);
+    });
+
+    it('ends on a final page with no nextOffset and no continuation', async () => {
+      const { data, text } = await page({ offset: 150 });
+      expect(ids(data.homologs)).toEqual(ids(manyHomologs.slice(150)));
+      expect(data.totalCount).toBe(174);
+      expect(data).not.toHaveProperty('nextOffset');
+      expect(data).not.toHaveProperty('truncated');
+      expect(data.notice).not.toContain('offset');
+      expect(text).not.toContain('Next offset');
+    });
+
+    it.each([174, 500])(
+      'answers offset %i past the end with totalCount and its own notice',
+      async (offset) => {
+        const { data, text } = await page({ offset });
+        expect(data.homologs).toEqual([]);
+        expect(data.totalCount).toBe(174);
+        expect(data).not.toHaveProperty('nextOffset');
+        expect(data).not.toHaveProperty('truncated');
+        expect(data.notice).toBe(
+          `No homologs returned: offset ${offset} is at or past the end of the 174 matching homologs. Request an offset below 174, or omit offset for the first page.`,
+        );
+        const lines = text.split('\n');
+        expect(lines).toContain('No homologs on this page — 174 homologs match in total.');
+        expect(lines).not.toContain('No homologs found.');
+        expect(lines).toContain(`> ${escapeMarkdownInline(data.notice!)}`);
+      },
+    );
+
+    it('returns every homolog from offset to the end when max_results is 0', async () => {
+      const { data } = await page({ offset: 170, max_results: 0 });
+      expect(ids(data.homologs)).toEqual(ids(manyHomologs.slice(170)));
+      expect(data.totalCount).toBe(174);
+      expect(data).not.toHaveProperty('nextOffset');
+    });
+
+    it('keeps the empty-result notice, not the past-end one, for a gene with no homologs', async () => {
+      mockGetHomologyBySymbol.mockResolvedValue({ homologs: [], resolvedQueryId: BRCA2_ID });
+      const { data, text } = await page({ offset: 10 });
+      expect(data).toMatchObject({ homologs: [], totalCount: 0 });
+      expect(data.notice).toBe(
+        `No orthologues found for "${BRCA2_ID}" in homo_sapiens. Try type=all.`,
+      );
+      expect(text.split('\n')).toContain('No homologs found.');
+    });
+
+    it('defaults offset to 0 and rejects a negative or fractional offset before any request', async () => {
+      expect(ensemblGetHomology.input.parse({ symbol: 'BRCA2' }).offset).toBe(0);
+      expect(ensemblGetHomology.input.parse({ symbol: 'BRCA2', offset: 3 }).offset).toBe(3);
+      for (const offset of [-1, 1.5]) {
+        const { result } = await page({ offset });
+        expect(result.structuredContent).toMatchObject({
+          error: { code: -32602, data: { reason: 'invalid_arguments' } },
+        });
+      }
+      expect(mockGetHomologyBySymbol).not.toHaveBeenCalled();
+    });
+  });
+
+  it('renders percId and percPos in content[] exactly as structuredContent carries them (#65)', async () => {
+    // Four-decimal values as Ensembl serves them (SOX9 → danio_rerio), plus integers.
+    const rows: HomologyEntry[] = [
+      { targetId: 'ENSDARG00000003293', percId: 78.5714, percPos: 85.0649 },
+      { targetId: 'ENSDARG00000043923', percId: 70.7617, percPos: 81.3268 },
+      { targetId: 'ENSORG00000000090', percId: 90, percPos: 100 },
+    ];
+    mockGetHomologyBySymbol.mockResolvedValueOnce({
+      homologs: rows,
+      resolvedQueryId: 'ENSG00000125398',
+    });
+    const result = await runToolContract(ensemblGetHomology, {
+      symbol: 'SOX9',
+      target_species: 'danio_rerio',
+    });
+    const { homologs } = result.structuredContent as { homologs: HomologyEntry[] };
+    expect(homologs.map((h) => [h.percId, h.percPos])).toEqual([
+      [78.5714, 85.0649],
+      [70.7617, 81.3268],
+      [90, 100],
+    ]);
+    const lines = contentText(result).split('\n');
+    for (const h of homologs) {
+      expect(lines).toContain(`**Percent identity:** ${h.percId}%`);
+      expect(lines).toContain(`**Percent positives:** ${h.percPos}%`);
+    }
+    expect(lines).toContain('**Percent identity:** 78.5714%');
+    expect(lines).toContain('**Percent positives:** 100%');
+    expect(contentText(result)).not.toMatch(/78\.6%|90\.0%/);
+  });
+
   it('surfaces the declared recovery hint on a not_found error (issue #16)', async () => {
     mockGetHomologyBySymbol.mockRejectedValueOnce(new Error('Gene not found in Ensembl'));
     const result = await runToolContract(ensemblGetHomology, { symbol: 'FAKEGENE' });
@@ -395,13 +570,6 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
 
   const recovery = (reason: string) =>
     ensemblGetHomology.errors!.find((e) => e.reason === reason)!.recovery;
-
-  /** Concatenated text of every `content[]` block — what a `content`-only client reads. */
-  const contentText = (result: Awaited<ReturnType<typeof runToolContract>>) =>
-    (result.content ?? [])
-      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-      .map((b) => b.text)
-      .join('\n');
 
   const rejectWith = (error: string) =>
     http.route({ match: HOMOLOGY, respond: () => Response.json({ error }, { status: 400 }) });
@@ -523,7 +691,7 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
     expect(contentText(result)).toContain(`## Homologs of ${bare} (homo_sapiens)`);
     expect(http.calls).toHaveLength(2);
     expect(http.calls[0]?.request.url).toBe(
-      `https://rest.ensembl.org/homology/id/homo_sapiens/${bare}?type=orthologues&target_species=mus_musculus`,
+      `https://rest.ensembl.org/homology/id/homo_sapiens/${bare}?type=orthologues&sequence=none&target_species=mus_musculus`,
     );
   });
 
@@ -534,7 +702,7 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
     routeVersionAware();
     await runToolContract(ensemblGetHomology, { id, species });
     expect(http.calls[0]?.request.url).toBe(
-      `https://rest.ensembl.org/homology/id/${species}/${id}?type=orthologues`,
+      `https://rest.ensembl.org/homology/id/${species}/${id}?type=orthologues&sequence=none`,
     );
   });
 
@@ -583,7 +751,7 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
     expect(lines).toContain('No homologs found.');
     expect(lines).toContain(`> ${escapeMarkdownInline(notice)}`);
     expect(http.calls[0]?.request.url).toBe(
-      'https://rest.ensembl.org/homology/id/homo_sapiens/ENSG00000139618?type=orthologues&target_species=saccharomyces_cerevisiae',
+      'https://rest.ensembl.org/homology/id/homo_sapiens/ENSG00000139618?type=orthologues&sequence=none&target_species=saccharomyces_cerevisiae',
     );
   });
 
@@ -646,8 +814,8 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
       );
     }
     expect(homologyUrls()).toEqual([
-      `https://rest.ensembl.org/homology/id/homo_sapiens/${TP53_ID}?type=orthologues&target_species=drosophila_melanogaster`,
-      `https://rest.ensembl.org/homology/id/homo_sapiens/${TP53_ID}?type=orthologues`,
+      `https://rest.ensembl.org/homology/id/homo_sapiens/${TP53_ID}?type=orthologues&sequence=none&target_species=drosophila_melanogaster`,
+      `https://rest.ensembl.org/homology/id/homo_sapiens/${TP53_ID}?type=orthologues&sequence=none`,
     ]);
     expect(membershipReads()).toBe(0);
   });
@@ -739,8 +907,8 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
         expect(lines).toContain('**Last common ancestor:** Metazoa');
         expect(lines).toContain(`> ${escapeMarkdownInline(notice)}`);
         expect(homologyUrls()).toEqual([
-          `https://rest.ensembl.org${path}?type=orthologues&target_species=homo_sapiens`,
-          `https://rest.ensembl.org${path}?type=orthologues&target_species=homo_sapiens&compara=pan_homology`,
+          `https://rest.ensembl.org${path}?type=orthologues&sequence=none&target_species=homo_sapiens`,
+          `https://rest.ensembl.org${path}?type=orthologues&sequence=none&target_species=homo_sapiens&compara=pan_homology`,
         ]);
         expect(membershipReads()).toBe(1);
       },
@@ -755,8 +923,58 @@ describe('ensemblGetHomology through EnsemblService (issues #34, #37)', () => {
       });
       expect(result.structuredContent).toMatchObject({ truncated: true, shown: 1, cap: 1 });
       const { notice } = result.structuredContent as { notice: string };
-      expect(notice.startsWith(`${PAN_NOTICE} Showing 1 of 3 homologs. `)).toBe(true);
+      expect(
+        notice.startsWith(
+          `${PAN_NOTICE} Showing 1 of 3 homologs from offset 0. Call again with offset 1 (nextOffset) for the next page`,
+        ),
+      ).toBe(true);
       expect(contentText(result).split('\n')).toContain(`> ${escapeMarkdownInline(notice)}`);
+    });
+
+    it('pages the pan-taxonomic answer, composing its notice, the continuation, and missing names (#64)', async () => {
+      const result = await runToolContract(ensemblGetHomology, {
+        id: FLY_GENE,
+        species: 'drosophila_melanogaster',
+        target_species: 'homo_sapiens',
+        max_results: 1,
+        offset: 1,
+      });
+      expect(result.structuredContent).toMatchObject({
+        totalCount: 3,
+        nextOffset: 2,
+        truncated: true,
+        shown: 1,
+        cap: 1,
+        notice: `${PAN_NOTICE} Showing 1 of 3 homologs from offset 1. Call again with offset 2 (nextOffset) for the next page, or set max_results to 0 for every remaining homolog. Target symbols are unavailable for 1 returned homologs: lookup failed, exhausted its budget, or supplied no name. All homologs are retained; use ensembl_lookup_gene with their targetId to look up missing names.`,
+      });
+      const { homologs, notice } = result.structuredContent as {
+        homologs: Array<{ targetId: string }>;
+        notice: string;
+      };
+      expect(homologs.map((h) => h.targetId)).toEqual([HUMAN_TARGETS[1]]);
+      const lines = contentText(result).split('\n');
+      expect(lines).toContain('**Next offset:** 2');
+      expect(lines).toContain(`> ${escapeMarkdownInline(notice)}`);
+      // Paging is local: Ensembl is asked for the whole set, once per comparison.
+      expect(homologyUrls()).toEqual([
+        `https://rest.ensembl.org/homology/id/drosophila_melanogaster/${FLY_GENE}?type=orthologues&sequence=none&target_species=homo_sapiens`,
+        `https://rest.ensembl.org/homology/id/drosophila_melanogaster/${FLY_GENE}?type=orthologues&sequence=none&target_species=homo_sapiens&compara=pan_homology`,
+      ]);
+    });
+
+    it('composes the pan-taxonomic notice with the past-end notice (#64)', async () => {
+      const result = await runToolContract(ensemblGetHomology, {
+        id: FLY_GENE,
+        species: 'drosophila_melanogaster',
+        target_species: 'homo_sapiens',
+        offset: 3,
+      });
+      expect(result.structuredContent).toMatchObject({
+        homologs: [],
+        totalCount: 3,
+        notice: `${PAN_NOTICE} No homologs returned: offset 3 is at or past the end of the 3 matching homologs. Request an offset below 3, or omit offset for the first page.`,
+      });
+      expect(result.structuredContent).not.toHaveProperty('nextOffset');
     });
 
     it('answers an empty pan-taxonomic result as no homologs, not as an unknown gene', async () => {

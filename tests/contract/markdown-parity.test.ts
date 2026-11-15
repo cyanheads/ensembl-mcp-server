@@ -17,8 +17,9 @@ import { renderHeading } from '@/mcp-server/tools/render-heading.js';
 import { readMarkdownText } from '../helpers/read-markdown.js';
 
 const getXrefsById = vi.fn();
+const predictVariantRegion = vi.fn();
 vi.mock('@/services/ensembl/ensembl-service.js', () => ({
-  getEnsemblService: () => ({ getXrefsById }),
+  getEnsemblService: () => ({ getXrefsById, predictVariantRegion }),
 }));
 
 const marker = 'A*p* [label](https://example.com) <b>tag</b> `code` | ~tilde~';
@@ -197,6 +198,7 @@ const cases = [
           {
             input: marker,
             alleleString: marker,
+            strand: -1,
             chromosome: marker,
             start: 1,
             end: 2,
@@ -223,6 +225,7 @@ const cases = [
               {
                 id: marker,
                 alleleString: marker,
+                strand: 1,
                 clinicalSignificance: [marker],
                 clinicalSignificanceReferenceAllele: marker,
                 clinicalSignificanceByAllele: { [marker]: [marker] },
@@ -305,6 +308,35 @@ describe('CommonMark result parity', () => {
       result.content.map((b) => (b.type === 'text' ? b.text : '')).join('\n'),
     );
     expect(text.split(marker).length - 1).toBe(2);
+  });
+
+  it('escapes only the rendered strand notices, preserving their raw structured value', async () => {
+    predictVariantRegion.mockResolvedValueOnce([
+      {
+        input: marker,
+        strand: -1,
+        transcriptConsequences: [],
+        colocatedVariants: [{ id: marker, strand: 1 }],
+      },
+    ]);
+    const variant = `1:1:1:-1/${marker}`;
+    const result = await runToolContract(ensemblPredictVariant, { variant });
+    const { notice } = result.structuredContent as { notice: string };
+    expect(notice).toContain(`sent 1:1:1:1/${marker} for ${variant}.`);
+    expect(notice).toContain(
+      `Strands differ: ${marker} (strand -1) vs colocated ${marker} (strand 1).`,
+    );
+    const markdown = result.content.map((b) => (b.type === 'text' ? b.text : '')).join('\n');
+    const text = readMarkdownText(markdown);
+    expect(text).toContain(notice);
+    // The notice carries four markers; format() renders the record heading and the colocated id.
+    expect(text.split(marker).length - 1).toBe(6);
+    expect(
+      parser
+        .parse(markdown, {})
+        .flatMap((t) => t.children ?? [])
+        .some((t) => t.type === 'link_open' || t.type === 'html_inline'),
+    ).toBe(false);
   });
 
   it.each(['A\n- B', 'A\r\n- B'])('preserves a multiline query %j on both surfaces', async (id) => {

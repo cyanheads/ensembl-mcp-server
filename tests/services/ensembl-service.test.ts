@@ -379,6 +379,56 @@ describe('EnsemblService', () => {
     });
   });
 
+  describe('VEP strands (issue #61)', () => {
+    it('keeps the record and colocated strands Ensembl reports', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse([
+          {
+            input: 'ENST00000335295.4:c.20A>T',
+            allele_string: 'A/T',
+            strand: -1,
+            transcript_consequences: [
+              { transcript_id: 'ENST00000335295', variant_allele: 'T', strand: -1 },
+              { transcript_id: 'ENST00000759072', variant_allele: 'T', strand: 1 },
+            ],
+            colocated_variants: [
+              { id: 'CD830010', allele_string: 'HGMD_MUTATION', strand: 1 },
+              { id: 'rs334', allele_string: 'T/A/C/G', strand: 1 },
+            ],
+          },
+        ]),
+      );
+      const [record] = await getEnsemblService().predictVariantHgvs(
+        'ENST00000335295.4:c.20A>T',
+        'homo_sapiens',
+        createMockContext(),
+      );
+
+      expect(record).toMatchObject({ alleleString: 'A/T', strand: -1 });
+      expect(record?.transcriptConsequences.map((tc) => tc.variantAllele)).toEqual(['T', 'T']);
+      expect(record?.colocatedVariants).toEqual([
+        { id: 'CD830010', alleleString: 'HGMD_MUTATION', strand: 1 },
+        { id: 'rs334', alleleString: 'T/A/C/G', strand: 1 },
+      ]);
+    });
+
+    it('omits strand where Ensembl reports none', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse([
+          { input: 'rs334', allele_string: 'T/A', colocated_variants: [{ id: 'rs334' }] },
+        ]),
+      );
+      const [record] = await getEnsemblService().predictVariantId(
+        'rs334',
+        'homo_sapiens',
+        createMockContext(),
+      );
+
+      expect(record).not.toHaveProperty('strand');
+      expect(record?.colocatedVariants).toEqual([{ id: 'rs334' }]);
+    });
+  });
+
   describe('getSequenceById expand params (issue #13)', () => {
     const seqBody = { id: 'ENSG00000139618', seq: 'ACGTACGT', molecule: 'dna' };
 
@@ -1114,9 +1164,15 @@ describe('EnsemblService', () => {
         (id: string) => `https://rest.ensembl.org/lookup/id/${id}`,
       ],
       [
+        'lookupGeneOnly',
+        (id: string) => getEnsemblService().lookupGeneOnly(id, createMockContext()),
+        { ...gene, object_type: 'Gene' },
+        (id: string) => `https://rest.ensembl.org/lookup/id/${id}?expand=1&mane=1`,
+      ],
+      [
         'lookupTranscript',
         (id: string) => getEnsemblService().lookupTranscript(id, createMockContext()),
-        { id: 'ENST00000380152', Parent: 'ENSG00000139618' },
+        { id: 'ENST00000380152', object_type: 'Transcript', Parent: 'ENSG00000139618' },
         (id: string) => `https://rest.ensembl.org/lookup/id/${id}`,
       ],
       [
@@ -1142,24 +1198,38 @@ describe('EnsemblService', () => {
             createMockContext(),
           ),
         { data: [{ id: 'ENSG00000139618', homologies: [] }] },
-        (id: string) => `https://rest.ensembl.org/homology/id/homo_sapiens/${id}?type=orthologues`,
+        (id: string) =>
+          `https://rest.ensembl.org/homology/id/homo_sapiens/${id}?type=orthologues&sequence=none`,
       ],
     ] as const;
 
     it.each(SITES)(
       '%s drops the version from an Ensembl stable ID',
       async (_m, call, body, url) => {
-        for (const id of ['ENSG00000139618.19', 'ensg00000139618.2']) {
+        for (const id of ['ENSG00000139618.19', 'ensg00000139618.2', 'LRG_1t1.1', 'LRG_1p1.12']) {
           mockFetch.mockResolvedValueOnce(jsonResponse(body));
           await call(id);
         }
-        expect(urls()).toEqual([url('ENSG00000139618'), url('ensg00000139618')]);
+        expect(urls()).toEqual([
+          url('ENSG00000139618'),
+          url('ensg00000139618'),
+          url('LRG_1t1'),
+          url('LRG_1p1'),
+        ]);
       },
     );
 
     it.each(SITES)('%s forwards other IDs unchanged', async (_m, call, body, url) => {
-      // Non-ENS (where .1 is part of the ID), unversioned, a short number, a bare dot.
-      const ids = ['AT3G52430.1', 'ENSG00000139618', 'ENSG0013961.17', 'ENSG00000139618.'];
+      // Non-ENS (where .1 is part of the ID), unversioned, a short number, a bare dot, an
+      // unversioned LRG transcript, and an LRG ID missing its gene number.
+      const ids = [
+        'AT3G52430.1',
+        'ENSG00000139618',
+        'ENSG0013961.17',
+        'ENSG00000139618.',
+        'LRG_1t1',
+        'LRG_t1.1',
+      ];
       for (const id of ids) {
         mockFetch.mockResolvedValueOnce(jsonResponse(body));
         await call(id);
@@ -1190,6 +1260,69 @@ describe('EnsemblService', () => {
         'ENSG00000139618.3',
       ]);
       expect(result.get('ENSG00000139618.3')).toMatchObject({ id: 'ENSG00000139618' });
+    });
+
+    describe('version-suffix pattern cost over a caller-sized ID (timing)', () => {
+      /**
+       * Least thread-CPU microseconds per call across five batches of `batch` lookups, so a
+       * small input is timed over enough calls to rise above the clock's resolution.
+       */
+      async function cpuPerCall(id: string, batch: number): Promise<number> {
+        let least = Number.POSITIVE_INFINITY;
+        for (let rep = 0; rep < 5; rep++) {
+          const ctx = createMockContext();
+          const start = process.threadCpuUsage();
+          for (let i = 0; i < batch; i++) await getEnsemblService().lookupTranscript(id, ctx);
+          const used = process.threadCpuUsage(start);
+          least = Math.min(least, (used.user + used.system) / batch);
+          mockFetch.mockClear();
+        }
+        return least;
+      }
+
+      /**
+       * Each shape grows 64x from its baseline. Bun's regex engine changes mode past ~80k
+       * characters on some shapes, so the line-break shapes stop at 64k and the digit run,
+       * which never changes mode, carries the 5k -> 320k span.
+       */
+      const SHAPES = [
+        // The LRG branch's worst case: each run backtracks into a class it is disjoint from.
+        [
+          'a long digit run',
+          (n: number) => {
+            const run = '1'.repeat(n / 3);
+            return `LRG_${run}t${run}.${run}x`;
+          },
+          5_000,
+        ],
+        [
+          'one long line ending in a break',
+          (n: number) => `LRG_1t1.1${'§1 x'.repeat(n / 4)}\ny`,
+          1_000,
+        ],
+        ['breaks throughout', (n: number) => `LRG_1t1.1${'  \r\n'.repeat(n / 4)}`, 1_000],
+      ] as const;
+
+      it.each(SHAPES)('stays linear over %s', { timeout: 0 }, async (_shape, make, base) => {
+        mockFetch.mockImplementation(async () =>
+          jsonResponse({ id: 'LRG_1t1', object_type: 'Transcript', Parent: 'LRG_1' }),
+        );
+        const batchFor = (size: number) => Math.max(1, Math.round((64 * base) / size));
+        await cpuPerCall(make(base), batchFor(base)); // warm-up
+        let atLargest = 0;
+        for (let size = base * 2; size <= base * 64; size *= 2) {
+          // The baseline is timed again beside each size; the least growth across the pairs counts.
+          let growth = Number.POSITIVE_INFINITY;
+          for (let pair = 0; pair < 3; pair++) {
+            const baseline = await cpuPerCall(make(base), batchFor(base));
+            atLargest = await cpuPerCall(make(size), batchFor(size));
+            growth = Math.min(growth, atLargest / Math.max(baseline, 1));
+          }
+          // Linear with 4x slack: under 256 across the full 64x span, where quadratic nears 4096.
+          expect(growth).toBeLessThan(4 * (size / base));
+        }
+        expect(atLargest).toBeLessThan(100_000);
+      });
     });
   });
 
@@ -1285,9 +1418,9 @@ describe('EnsemblService', () => {
           taxonomyLevel: 'Metazoa',
         });
         expect(urls()).toEqual([
-          `${base}?type=orthologues&target_species=homo_sapiens`,
+          `${base}?type=orthologues&sequence=none&target_species=homo_sapiens`,
           PAN_SET_URL,
-          `${base}?type=orthologues&target_species=homo_sapiens&compara=pan_homology`,
+          `${base}?type=orthologues&sequence=none&target_species=homo_sapiens&compara=pan_homology`,
         ]);
       },
     );
@@ -1297,7 +1430,7 @@ describe('EnsemblService', () => {
       const result = await byId('arabidopsis_thaliana');
       expect(result).toEqual({ homologs: [], comparison: 'pan_homology' });
       expect(urls().at(-1)).toBe(
-        `${ID_URL}?type=orthologues&target_species=arabidopsis_thaliana&compara=pan_homology`,
+        `${ID_URL}?type=orthologues&sequence=none&target_species=arabidopsis_thaliana&compara=pan_homology`,
       );
     });
 
@@ -1306,7 +1439,7 @@ describe('EnsemblService', () => {
       const result = await byId('Homo_Sapiens');
       expect(result.comparison).toBe('pan_homology');
       expect(urls().at(-1)).toBe(
-        `${ID_URL}?type=orthologues&target_species=Homo_Sapiens&compara=pan_homology`,
+        `${ID_URL}?type=orthologues&sequence=none&target_species=Homo_Sapiens&compara=pan_homology`,
       );
     });
 
@@ -1332,7 +1465,7 @@ describe('EnsemblService', () => {
         expect(error).toMatchObject({ code: -32007, data: { reason: 'target_not_compared' } });
         expect((error as McpError).message).toBe(message);
         expect(urls()).toEqual([
-          `https://rest.ensembl.org/homology/id/${species}/${FLY_GENE}?type=orthologues&target_species=${target}`,
+          `https://rest.ensembl.org/homology/id/${species}/${FLY_GENE}?type=orthologues&sequence=none&target_species=${target}`,
           PAN_SET_URL,
         ]);
       },
@@ -1380,9 +1513,9 @@ describe('EnsemblService', () => {
       );
       expect(await byId(undefined)).not.toHaveProperty('comparison');
       expect(urls()).toEqual([
-        `${ID_URL}?type=orthologues&target_species=caenorhabditis_elegans`,
-        `${ID_URL}?type=orthologues&target_species=not_a_species`,
-        `${ID_URL}?type=orthologues`,
+        `${ID_URL}?type=orthologues&sequence=none&target_species=caenorhabditis_elegans`,
+        `${ID_URL}?type=orthologues&sequence=none&target_species=not_a_species`,
+        `${ID_URL}?type=orthologues&sequence=none`,
       ]);
     });
 
@@ -1504,7 +1637,7 @@ describe('EnsemblService', () => {
         expect(errorOf(result.state.value!).code).toBe(-32011);
         expect(reads[0]?.aborted).toBe(true);
         expect(urls()).toEqual([
-          `${ID_URL}?type=orthologues&target_species=homo_sapiens`,
+          `${ID_URL}?type=orthologues&sequence=none&target_species=homo_sapiens`,
           PAN_SET_URL,
         ]);
       });

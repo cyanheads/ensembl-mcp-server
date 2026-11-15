@@ -15,6 +15,7 @@ import { ensemblGeneResource } from '@/mcp-server/resources/definitions/gene.res
 import { ensemblLookupGene } from '@/mcp-server/tools/definitions/lookup-gene.tool.js';
 import { ensemblPredictVariant } from '@/mcp-server/tools/definitions/predict-variant.tool.js';
 import { initEnsemblService } from '@/services/ensembl/ensembl-service.js';
+import { readMarkdownText } from '../helpers/read-markdown.js';
 
 let http: FetchMockHarness;
 beforeEach(() => {
@@ -140,8 +141,8 @@ describe('VEP annotation preservation', () => {
       for (const value of [
         'T/A/C/G',
         'NM_000518.5',
-        '**SIFT:** deleterious_low_confidence (score: 0.000)',
-        '**PolyPhen:** benign (score: 0.000)',
+        '**SIFT:** deleterious_low_confidence (score: 0)',
+        '**PolyPhen:** benign (score: 0)',
         '**Ensembl canonical:** true',
         '**HGVSc:** ENST00000335295.4:c.20A>T',
         'aggregate clinical significance: pathogenic, other, protective, not_provided, likely_benign',
@@ -200,6 +201,114 @@ describe('VEP annotation preservation', () => {
       expect(JSON.stringify(result.content)).not.toContain('Variant allele');
     },
   );
+  it.each([
+    // rs63749819 as VEP reports it: the deletion allele's terms carry an empty allele key.
+    [
+      'a deletion keyed by an empty allele, on a record listing "-"',
+      {
+        id: 'rs63749819',
+        allele_string: 'T/-',
+        clin_sig_ref_allele: 'T',
+        clin_sig_allele: ':pathogenic',
+      },
+      { '-': ['pathogenic'] },
+    ],
+    [
+      'empty-key terms beside explicit ones, on a record listing "-"',
+      { allele_string: 'TA/-/T', clin_sig_allele: 'T:benign;:pathogenic;:risk_factor' },
+      { T: ['benign'], '-': ['pathogenic', 'risk_factor'] },
+    ],
+    // rs113993960 (CFTR F508del) as VEP reports it: its alleles list no "-", so the key stays unread.
+    [
+      'empty-key terms on a record whose alleles list no "-"',
+      {
+        id: 'rs113993960',
+        allele_string: 'TCTT/T/TCTTCTT',
+        clin_sig_ref_allele: 'CTT',
+        clin_sig_allele: ':risk_factor;:pathogenic;:drug_response;:likely_pathogenic',
+      },
+      undefined,
+    ],
+  ])('attributes %s', async (_label, colocated, byAllele) => {
+    http.route({
+      match: () => true,
+      respond: () =>
+        Response.json([
+          { colocated_variants: [{ clin_sig: ['pathogenic'], strand: 1, ...colocated }] },
+        ]),
+    });
+    const result = await runToolContract(ensemblPredictVariant, { variant: 'rs334' });
+    expect(result.isError).toBeUndefined();
+    const cv = (
+      result.structuredContent as {
+        results: { colocatedVariants: { clinicalSignificanceByAllele?: object }[] }[];
+      }
+    ).results[0]!.colocatedVariants[0]!;
+    expect(cv.clinicalSignificanceByAllele).toEqual(byAllele);
+    const text = readMarkdownText(
+      (result.content as { type: string; text: string }[]).map((block) => block.text).join('\n'),
+    );
+    if (byAllele) expect(text).toContain(`| -: ${byAllele['-'].join(', ')}`);
+    else expect(text).not.toContain('| -: ');
+  });
+
+  it('renders SIFT and PolyPhen scores exactly as stored', async () => {
+    http.route({
+      match: () => true,
+      respond: () =>
+        Response.json([
+          {
+            transcript_consequences: [
+              // BRCA2 c.2T>A and rs334's G allele as VEP scores them.
+              {
+                sift_prediction: 'deleterious',
+                sift_score: 0,
+                polyphen_prediction: 'possibly_damaging',
+                polyphen_score: 0.858,
+              },
+              {
+                sift_prediction: 'deleterious_low_confidence',
+                sift_score: 0.01,
+                polyphen_prediction: 'benign',
+                polyphen_score: 0.08,
+              },
+              // Finer than any sampled score: a three-place render would round it.
+              {
+                sift_prediction: 'tolerated',
+                sift_score: 0.0125,
+                polyphen_prediction: 'probably_damaging',
+                polyphen_score: 0.9876,
+              },
+            ],
+          },
+        ]),
+    });
+    const result = await runToolContract(ensemblPredictVariant, { variant: 'rs334' });
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      results: [
+        {
+          transcriptConsequences: [
+            { sift: { score: 0 }, polyphen: { score: 0.858 } },
+            { sift: { score: 0.01 }, polyphen: { score: 0.08 } },
+            { sift: { score: 0.0125 }, polyphen: { score: 0.9876 } },
+          ],
+        },
+      ],
+    });
+    const lines = (result.content as { type: string; text: string }[])
+      .flatMap((block) => block.text.split('\n'))
+      .filter((line) => /^\*\*(SIFT|PolyPhen):\*\*/.test(line));
+    expect(lines).toEqual([
+      '**SIFT:** deleterious (score: 0)',
+      '**PolyPhen:** possibly_damaging (score: 0.858)',
+      '**SIFT:** deleterious_low_confidence (score: 0.01)',
+      '**PolyPhen:** benign (score: 0.08)',
+      '**SIFT:** tolerated (score: 0.0125)',
+      '**PolyPhen:** probably_damaging (score: 0.9876)',
+    ]);
+  });
+
   it('retains explicit allele terms safely without treating object keys as prototypes', async () => {
     http.route({
       match: () => true,

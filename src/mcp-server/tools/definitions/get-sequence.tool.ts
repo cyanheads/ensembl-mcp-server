@@ -169,9 +169,7 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
       code: JsonRpcErrorCode.NotFound,
       when: 'The stable ID or region was not found in Ensembl.',
       recovery:
-        'Verify the ID format (ENSG…, ENST…, ENSP…) or region coordinates. A version suffix is ' +
-        'already dropped from an ENS… ID, so one still not found is mistyped or retired. ' +
-        'Use ensembl_lookup_gene to get valid stable IDs first.',
+        'Verify the ID format (ENSG…, ENST…, ENSP…) or region coordinates. A version suffix is already dropped from an ENS… or LRG ID, so one still not found is mistyped or retired. Use ensembl_lookup_gene to get valid stable IDs first.',
     },
     {
       reason: 'type_mismatch',
@@ -353,11 +351,11 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
     if (input.offset >= length) {
       ctx.enrich.notice(
         `No characters returned: offset ${input.offset} is at or past the end of the sequence, ` +
-          `which is ${length.toLocaleString()} characters long. Request an offset below the length.`,
+          `which is ${length.toLocaleString('en-US')} characters long. Request an offset below the length.`,
       );
     } else if (truncated) {
       ctx.enrich.notice(
-        `Showing ${(end - input.offset).toLocaleString()} of ${length.toLocaleString()} characters ` +
+        `Showing ${(end - input.offset).toLocaleString('en-US')} of ${length.toLocaleString('en-US')} characters ` +
           `from offset ${input.offset}. Call again with offset ${end} for the next window, or set ` +
           'max_length to 0 for everything from offset to the end.',
       );
@@ -379,7 +377,7 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
     lines.push(renderHeading(2, `Sequence: ${result.id}`));
     const unit = result.type === 'protein' ? 'residues' : 'bp';
     lines.push(
-      `**Type:** ${escapeMarkdownInline(result.type)} | **Length:** ${result.length.toLocaleString()} ${unit}`,
+      `**Type:** ${escapeMarkdownInline(result.type)} | **Length:** ${result.length.toLocaleString('en-US')} ${unit}`,
     );
     if (result.description)
       lines.push(`**Description:** ${escapeMarkdownInline(result.description)}`);
@@ -387,8 +385,8 @@ export const ensemblGetSequence = tool('ensembl_get_sequence', {
       ? `truncated; next offset ${result.nextOffset}`
       : 'not truncated (nothing follows this window)';
     lines.push(
-      `**Window:** ${result.seq.length.toLocaleString()} characters from offset ${result.offset} ` +
-        `of ${result.length.toLocaleString()} — ${extent}`,
+      `**Window:** ${result.seq.length.toLocaleString('en-US')} characters from offset ${result.offset} ` +
+        `of ${result.length.toLocaleString('en-US')} — ${extent}`,
     );
     lines.push('');
     if (result.seq) {

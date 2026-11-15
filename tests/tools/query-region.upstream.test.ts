@@ -119,6 +119,66 @@ describe('ensembl_query_region upstream requests', () => {
     expect(result.structuredContent).not.toHaveProperty('notice');
     expect(textOf(result)).toContain('HBB');
   });
+
+  it('forwards biotype with a variation request and says it filtered no variation row (issue #62)', async () => {
+    const variationRow = (id: string, start: number) => ({
+      id,
+      feature_type: 'variation',
+      seq_region_name: '11',
+      start,
+      end: start,
+      strand: 1,
+      assembly_name: 'GRCh38',
+    });
+    http.route({
+      match: OVERLAP,
+      respond: () =>
+        Response.json([
+          variationRow('rs1564875707', 5226990),
+          variationRow('rs1847579731', 5226991),
+        ]),
+    });
+    const result = await runToolContract(ensemblQueryRegion, {
+      species: 'homo_sapiens',
+      region: '11:5226990-5227020',
+      feature: ['variation'],
+      biotype: 'SNV',
+    });
+    expect(result.isError).toBeUndefined();
+    const url = new URL(http.calls[0]!.request.url);
+    expect(url.searchParams.get('biotype')).toBe('SNV');
+    expect(url.searchParams.getAll('feature')).toEqual(['variation']);
+    const notice = String((result.structuredContent as { notice?: string }).notice);
+    expect(notice).toContain('so the variation features are not filtered by "SNV"');
+    expect(textOf(result)).toContain('so the variation features are not filtered by');
+  });
+
+  it('re-reads the full overlap set for every page and sends no paging parameter upstream (issue #64)', async () => {
+    const gene = (id: string, start: number) => ({ ...geneRow, id, external_name: id, start });
+    // Upstream order is not the page order; the tool sorts by start before slicing.
+    http.route({
+      match: OVERLAP,
+      respond: () => Response.json([gene('G3', 300), gene('G1', 100), gene('G2', 200)]),
+    });
+    const args = { species: 'homo_sapiens', region: '11:1-1000', max_results: 2 };
+
+    const first = await runToolContract(ensemblQueryRegion, args);
+    const second = await runToolContract(ensemblQueryRegion, { ...args, offset: 2 });
+
+    const ids = (r: typeof first) =>
+      (r.structuredContent as { features: { id: string }[] }).features.map((f) => f.id);
+    expect(ids(first)).toEqual(['G1', 'G2']);
+    expect(first.structuredContent).toMatchObject({ totalCount: 3, nextOffset: 2 });
+    expect(ids(second)).toEqual(['G3']);
+    expect(second.structuredContent).toMatchObject({ totalCount: 3 });
+    expect(second.structuredContent).not.toHaveProperty('nextOffset');
+    expect(requests(OVERLAP)).toBe(2);
+    for (const call of http.calls) {
+      const params = new URL(call.request.url).searchParams;
+      expect([...params.keys()]).toEqual(['feature']);
+    }
+  });
+
   it('makes exactly one request when a feature row carries its assembly (issue #23)', async () => {
     http.route({ match: OVERLAP, respond: () => Response.json([geneRow]) });
     const result = await runToolContract(ensemblQueryRegion, {

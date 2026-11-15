@@ -85,6 +85,11 @@ describe('ensemblGeneDossierPrompt', () => {
     expect(step3).toContain('totalCount');
     expect(step3).toContain('max_results');
     expect(step3).toContain('narrower');
+    // Issue #64: pages come 25 at a time and continue through nextOffset, at most 5,000 a page.
+    expect(step3).toContain('25 at a time');
+    expect(step3).toContain('pass nextOffset as offset for the next page');
+    expect(step3).toContain('at most 5,000 per page');
+    expect(step3).not.toContain('first 100');
     // The synthesis step reports that same count.
     expect(text.slice(text.indexOf('7. **'))).toContain('totalCount');
   });

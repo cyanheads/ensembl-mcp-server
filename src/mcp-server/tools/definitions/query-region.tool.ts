@@ -5,7 +5,13 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import {
+  ATTR_MCP_TOOL_NAME,
+  createCounter,
+  escapeMarkdownInline,
+} from '@cyanheads/mcp-ts-core/utils';
+import { getServerConfig } from '@/config/server-config.js';
+import { pageOf, pastEndNotice } from '@/mcp-server/tools/paging.js';
 import {
   isMitochondrionAlias,
   isReversed,
@@ -17,11 +23,35 @@ import {
 } from '@/mcp-server/tools/region-grammar.js';
 import { renderHeading } from '@/mcp-server/tools/render-heading.js';
 import { getEnsemblService } from '@/services/ensembl/ensembl-service.js';
+import type { OverlapFeature } from '@/services/ensembl/types.js';
 
 const FEATURE_TYPES = ['gene', 'transcript', 'variation', 'regulatory', 'exon'] as const;
 
+/**
+ * The feature types Ensembl applies `biotype` to — an exon by its parent
+ * transcript's biotype. Variation and regulatory rows carry no biotype, and
+ * Ensembl returns them unfiltered.
+ */
+const BIOTYPE_FILTERED: ReadonlySet<string> = new Set(['gene', 'transcript', 'exon']);
+
+/**
+ * Most features one page returns. Ensembl serves the whole overlap set with no
+ * paging, so the cap is the measured ~1 MB-per-surface point: 5,000 BRCA2
+ * variation rows render 0.77 MB of structuredContent and 0.74 MB of content[].
+ */
+const PAGE_CAP = 5000;
+
+const clampedCounter = createCounter(
+  'ensembl.count_input.clamped',
+  'Count inputs clamped to their per-call cap',
+  '{calls}',
+);
+
 /** Ensembl's rejection of an unknown species; it quotes the name it could not find. */
 const UNKNOWN_SPECIES = /can not find internal name for species/i;
+
+/** Code-unit order with an absent value first — locale-free, so the page order is total and cheap. */
+const compareText = (a = '', b = '') => (a < b ? -1 : a > b ? 1 : 0);
 
 const FeatureSchema = z.object({
   id: z.string().optional().describe('Ensembl stable ID for this feature (e.g. ENSG…, rs…).'),
@@ -32,7 +62,9 @@ const FeatureSchema = z.object({
   biotype: z
     .string()
     .optional()
-    .describe('Biotype of the feature (e.g. protein_coding, lncRNA, SNV).'),
+    .describe(
+      'Biotype of a gene or transcript feature (e.g. protein_coding, lncRNA). Exon, variation, and regulatory rows carry none.',
+    ),
   chromosome: z.string().describe('Chromosome or sequence region name.'),
   start: z.number().describe('Start position on the chromosome (1-based).'),
   end: z.number().describe('End position on the chromosome (1-based).'),
@@ -63,19 +95,7 @@ const FeatureSchema = z.object({
 export const ensemblQueryRegion = tool('ensembl_query_region', {
   title: 'Query Genomic Region',
   description:
-    'Find genomic features overlapping a chromosomal region: genes, transcripts, variants, regulatory ' +
-    'elements, or exons. Returns each feature with its stable ID, type, location, biotype, and name, ' +
-    'plus the genome assembly the coordinates are on. ' +
-    'Useful for "what\'s in this locus?" and for seeding follow-up lookups. Region format is chr:start-end ' +
-    'with species set (e.g. 13:32315086-32400268 for the BRCA2 locus), or species:chr:start-end ' +
-    '(e.g. homo_sapiens:13:32315086-32400268), spanning at most 5,000,000 bases. Ensembl normalizes ' +
-    'chromosome names and canonical vertebrate output omits the chr prefix (13, not chr13); a chr-prefixed ' +
-    'name like chr13 is also accepted. The feature parameter defaults to gene only — requesting ' +
-    'variation in an 85 kb region matches 44,000+ entries. Explicitly include variation, regulatory, ' +
-    'transcript, or exon only when needed. The response returns up to max_results features (default 100) ' +
-    'while totalCount always reports the full count; set max_results to 0 for every feature, or query a ' +
-    'smaller region to see a different slice. Exon rows carry the parent transcript ID, so the same exon ' +
-    'appears once per transcript it belongs to.',
+    'Find genomic features overlapping a chromosomal region: genes, transcripts, variants, regulatory elements, or exons. Returns each feature with its stable ID, type, location, biotype, and name, plus the genome assembly the coordinates are on. Useful for "what\'s in this locus?" and for seeding follow-up lookups. Region format is chr:start-end with species set (e.g. 13:32315086-32400268 for the BRCA2 locus), or species:chr:start-end (e.g. homo_sapiens:13:32315086-32400268), spanning at most 5,000,000 bases. Ensembl normalizes chromosome names and canonical vertebrate output omits the chr prefix (13, not chr13); a chr-prefixed name like chr13 is also accepted. The feature parameter defaults to gene only — requesting variation in an 85 kb region matches 44,000+ entries. Explicitly include variation, regulatory, transcript, or exon only when needed. Features come in one fixed order — by requested feature type, then start, end, ID, and parent transcript — max_results at a time (default 25); totalCount reports every match, and when more follow, nextOffset is the offset for the next page. Exon rows carry the parent transcript ID, so the same exon appears once per transcript it belongs to.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     species: z
@@ -123,33 +143,64 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
       .string()
       .optional()
       .describe(
-        'Optional biotype filter (e.g. protein_coding, lncRNA, SNV). ' +
-          'Case-sensitive (lncRNA, not lncrna); remove the filter to inspect all matching feature types. ' +
-          'Applied server-side by Ensembl. Not all feature types support biotype filtering.',
+        "Optional biotype filter (e.g. protein_coding, lncRNA), applied by Ensembl to gene, transcript, and exon features — an exon by its parent transcript's biotype. Variation and regulatory features carry no biotype and come back unfiltered. Case-sensitive (lncRNA, not lncrna); remove the filter to inspect every matching feature.",
       ),
     max_results: z
       .number()
+      .min(0)
+      .check((payload) => {
+        if (!Number.isInteger(payload.value)) {
+          payload.issues.push({ code: 'invalid_type', expected: 'int', input: payload.value });
+        } else if (payload.value > PAGE_CAP && !getServerConfig().clampLimits) {
+          payload.issues.push({
+            code: 'too_big',
+            origin: 'number',
+            maximum: PAGE_CAP,
+            inclusive: true,
+            input: payload.value,
+          });
+        }
+      })
+      .default(25)
+      .describe(
+        'Number of features to return, counted from offset. Default 25; 0 returns 5,000 and says so. A value above 5,000 is clamped to 5,000 with a notice, or rejected where the server is set to reject it. totalCount always reports the full number found.',
+      )
+      .meta({
+        /**
+         * `.int()` would advertise and enforce Number.MAX_SAFE_INTEGER, so the integer
+         * type is declared here. A getter, so every emission reads the switch: the
+         * cap is advertised as the maximum only while values above it are rejected.
+         */
+        type: 'integer',
+        get maximum() {
+          return getServerConfig().clampLimits ? undefined : PAGE_CAP;
+        },
+      }),
+    offset: z
+      .number()
       .int()
       .min(0)
-      .default(100)
+      .default(0)
       .describe(
-        'Maximum number of features to return. A gene-length region can hold tens of thousands of ' +
-          'variation features; the default keeps the response compact. Set to 0 to return every ' +
-          'feature uncapped. totalCount always reports the true number found before this cap.',
+        '0-based position in the ordered features where the returned page starts. Default 0. Pass nextOffset from a previous response to fetch the following page; an offset at or past totalCount returns no features.',
       ),
   }),
   output: z.object({
     features: z
       .array(FeatureSchema.describe('A single genomic feature overlapping the queried region.'))
       .describe(
-        'Genomic features found in the requested region, capped to max_results. ' +
-          'totalCount reports the full count found before the cap.',
+        'One page of the features overlapping the region: at most max_results, starting at offset, ordered by requested feature type, then start, end, ID, and parent transcript.',
       ),
     totalCount: z
       .number()
       .describe(
-        'Total number of features found in the region before the max_results cap. ' +
-          'Exceeds the returned features count when the list was capped.',
+        'Total number of features overlapping the region, before offset and max_results. Exceeds the returned features count when the list was paged.',
+      ),
+    nextOffset: z
+      .number()
+      .optional()
+      .describe(
+        'Offset of the first feature after this page — pass it as offset to fetch the next page. Present only when more features follow.',
       ),
     region: z
       .string()
@@ -171,13 +222,18 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     notice: z
       .string()
       .optional()
-      .describe('Guidance about the result set: empty, large, capped, or missing assembly.'),
+      .describe(
+        'Guidance about the result set: empty, offset past the end, max_results clamped, more features following, biotype not applied to a requested type, large, or missing assembly.',
+      ),
     truncated: z
       .boolean()
       .optional()
-      .describe('True when the feature list was capped at max_results.'),
-    shown: z.number().optional().describe('Number of features returned after the max_results cap.'),
-    cap: z.number().optional().describe('The max_results limit applied to the feature list.'),
+      .describe('True when more features follow this page; pass nextOffset as offset to continue.'),
+    shown: z.number().optional().describe('Number of features returned on this page.'),
+    cap: z
+      .number()
+      .optional()
+      .describe('The max_results value applied to this page, after any clamp to 5,000.'),
   },
 
   enrichmentTrailer: {
@@ -227,6 +283,7 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
       features: input.feature,
       biotype: input.biotype,
       maxResults: input.max_results,
+      offset: input.offset,
     });
     const service = getEnsemblService();
 
@@ -285,11 +342,37 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
         throw err;
       });
 
-    // Ensembl returns the full overlap set with no paging; cap post-fetch so wide
-    // regions stay compact by default. totalCount stays the true pre-cap count
-    // (max_results = 0 disables the cap).
-    const totalCount = features.length;
-    const returned = input.max_results > 0 ? features.slice(0, input.max_results) : features;
+    // 0 or a value above the cap asks for as many features as one page holds. Strict
+    // mode rejects a value above the cap at the schema, so only 0 is clamped there.
+    const limit =
+      input.max_results === 0 || input.max_results > PAGE_CAP ? PAGE_CAP : input.max_results;
+    const clamped = limit !== input.max_results;
+    if (clamped) {
+      ctx.log.info('Clamped max_results to the page cap', {
+        requested: input.max_results,
+        applied: limit,
+      });
+      clampedCounter.add(1, { [ATTR_MCP_TOOL_NAME]: 'ensembl_query_region' });
+    }
+
+    // Ensembl returns the full overlap set with no paging, so every page re-reads it and
+    // slices one total order: requested type, start, end, id, then parentId (an exon is
+    // reported once per parent transcript). totalCount stays the true pre-page count.
+    const typeRank = new Map<string, number>();
+    for (const [i, type] of input.feature.entries()) {
+      if (!typeRank.has(type)) typeRank.set(type, i);
+    }
+    const rankOf = (f: OverlapFeature) => typeRank.get(f.featureType) ?? input.feature.length;
+    const ordered = features.toSorted(
+      (a, b) =>
+        rankOf(a) - rankOf(b) ||
+        a.start - b.start ||
+        a.end - b.end ||
+        compareText(a.id, b.id) ||
+        compareText(a.parentId, b.parentId),
+    );
+    const totalCount = ordered.length;
+    const { page: returned, nextOffset } = pageOf(ordered, input.offset, limit);
 
     // Every overlap row type except regulatory carries its assembly, so read it from
     // the full set at no request cost; only an empty or regulatory-only result needs
@@ -306,29 +389,42 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
         return;
       }));
 
+    // biotype narrows only these requested types, so only they make it a cause or a remedy.
+    const filterable = input.feature.some((f) => BIOTYPE_FILTERED.has(f));
+    const unfiltered = input.feature.filter((f) => !BIOTYPE_FILTERED.has(f));
+
     // ctx.enrich.notice is last-wins, so every applicable fragment composes into ONE string.
     const fragments: string[] = [];
     if (totalCount === 0) {
       fragments.push(
         `No ${input.feature.join(', ')} features found in ${region} for ${species}. ` +
-          (input.biotype
+          (input.biotype && filterable
             ? `The biotype filter "${input.biotype}" may exclude matching features. ` +
               'Biotypes are case-sensitive (protein_coding, lncRNA). Remove the biotype filter to inspect the region. '
             : 'The region may be intergenic, or the coordinates may not cover the intended locus. ') +
           'Use ensembl_lookup_gene to confirm the locus coordinates.',
       );
+    } else if (input.offset >= totalCount) {
+      fragments.push(pastEndNotice('features', input.offset, totalCount));
     }
-    const capped = returned.length < totalCount;
-    if (capped) {
+    if (clamped) {
       fragments.push(
-        `Showing ${returned.length} of ${totalCount} features. ` +
-          'Raise max_results (0 returns all) or query a smaller region for the rest.',
+        `Requested max_results ${input.max_results}; applied ${limit}, the most features one page returns.`,
+      );
+    }
+    if (nextOffset !== undefined) {
+      fragments.push(
+        `Showing ${returned.length} of ${totalCount} features from offset ${input.offset}. Call again with offset ${nextOffset} (nextOffset) for the next page${limit < PAGE_CAP ? `, raise max_results (at most ${PAGE_CAP})` : ''}, or query a smaller region.`,
+      );
+    }
+    if (input.biotype && unfiltered.length > 0) {
+      fragments.push(
+        `Ensembl applies biotype only to gene, transcript, and exon features (an exon by its parent transcript's biotype), so the ${unfiltered.join(' and ')} features are not filtered by "${input.biotype}".`,
       );
     }
     if (totalCount > 1000) {
       fragments.push(
-        `Large result set (${totalCount} features). ` +
-          'Consider narrowing the region or filtering by biotype to reduce context usage.',
+        `Large result set (${totalCount} features). Consider narrowing the region${filterable && !input.biotype ? ' or filtering by biotype' : ''} to reduce context usage.`,
       );
     }
     if (!assemblyName) {
@@ -339,8 +435,8 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     }
     if (fragments.length > 0) {
       const guidance = fragments.join(' ');
-      if (capped) {
-        ctx.enrich.truncated({ shown: returned.length, cap: input.max_results, guidance });
+      if (nextOffset !== undefined) {
+        ctx.enrich.truncated({ shown: returned.length, cap: limit, guidance });
       } else {
         ctx.enrich.notice(guidance);
       }
@@ -349,6 +445,7 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     return {
       features: returned,
       totalCount,
+      ...(nextOffset !== undefined && { nextOffset }),
       region,
       species,
       ...(assemblyName && { assemblyName }),
@@ -363,10 +460,16 @@ export const ensemblQueryRegion = tool('ensembl_query_region', {
     const shown = result.features.length;
     const found =
       result.totalCount > shown ? `${shown} of ${result.totalCount}` : `${result.totalCount}`;
-    lines.push(`**Features found:** ${found}\n`);
+    lines.push(`**Features found:** ${found}`);
+    if (result.nextOffset !== undefined) lines.push(`**Next offset:** ${result.nextOffset}`);
+    lines.push('');
 
     if (result.features.length === 0) {
-      lines.push('No features found in this region.');
+      lines.push(
+        result.totalCount === 0
+          ? 'No features found in this region.'
+          : `No features on this page — ${result.totalCount} features match in total.`,
+      );
       return [{ type: 'text', text: lines.join('\n') }];
     }
 

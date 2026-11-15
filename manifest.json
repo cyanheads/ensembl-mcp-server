@@ -19,7 +19,8 @@
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "ENSEMBL_CLAMP_LIMITS": "${user_config.clamp_limits}"
       }
     }
   },
@@ -28,5 +29,13 @@
   },
   "tools_generated": true,
   "prompts_generated": true,
-  "user_config": {}
+  "user_config": {
+    "clamp_limits": {
+      "type": "boolean",
+      "title": "Clamp oversized page requests",
+      "description": "Clamp an ensembl_query_region max_results above 5,000 to 5,000 with a notice. Turn off to reject larger values instead.",
+      "default": true,
+      "required": false
+    }
+  }
 }

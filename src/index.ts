@@ -5,6 +5,7 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
+import { loadServerConfig } from './config/server-config.js';
 import { ensemblGeneDossierPrompt } from './mcp-server/prompts/definitions/gene-dossier.prompt.js';
 import { ensemblGeneResource } from './mcp-server/resources/definitions/gene.resource.js';
 import {
@@ -58,10 +59,12 @@ await createApp({
   skills: 'skills',
   instructions: `Ensembl genomics server — vertebrate and model organism gene, sequence, and variant data.
 Species names use Ensembl internal format: lowercase_underscore scientific names (homo_sapiens, mus_musculus).
-Discovery workflow: ensembl_list_species (nameContains finds a species by common or scientific name; results come 50 at a time) → ensembl_lookup_gene → ensembl_get_sequence / ensembl_get_xrefs / ensembl_get_homology.
+Discovery workflow: ensembl_list_species (nameContains finds a species by common or scientific name; results come 25 at a time) → ensembl_lookup_gene → ensembl_get_sequence / ensembl_get_xrefs / ensembl_get_homology.
 For a complete gene research workflow, use the ensembl_gene_dossier prompt.
 Override the default GRCh38 endpoint by setting ENSEMBL_BASE_URL (e.g. https://grch37.rest.ensembl.org for GRCh37).`,
   setup(core) {
+    // After the framework has loaded .env, so a value set there reaches the schemas and the service.
+    loadServerConfig();
     initEnsemblService(core.config, core.storage);
   },
 });

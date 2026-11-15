@@ -29,6 +29,13 @@
           "default": "https://rest.ensembl.org"
         },
         {
+          "name": "ENSEMBL_CLAMP_LIMITS",
+          "description": "Clamp an ensembl_query_region max_results above 5,000 to 5,000 with a notice. Set false to advertise 5,000 as the schema maximum and reject larger values.",
+          "format": "boolean",
+          "isRequired": false,
+          "default": "true"
+        },
+        {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
           "format": "string",
@@ -59,6 +66,13 @@
           "format": "string",
           "isRequired": false,
           "default": "https://rest.ensembl.org"
+        },
+        {
+          "name": "ENSEMBL_CLAMP_LIMITS",
+          "description": "Clamp an ensembl_query_region max_results above 5,000 to 5,000 with a notice. Set false to advertise 5,000 as the schema maximum and reject larger values.",
+          "format": "boolean",
+          "isRequired": false,
+          "default": "true"
         },
         {
           "name": "MCP_HTTP_HOST",
